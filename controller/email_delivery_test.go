@@ -343,8 +343,11 @@ func TestAuthEmailTemplatesThroughDelivery(t *testing.T) {
 	})
 	previousAddress, previousName, previousMinutes := system_setting.ServerAddress, common.SystemName, common.VerificationValidMinutes
 	system_setting.ServerAddress, common.SystemName, common.VerificationValidMinutes = "https://dashboard.example.com/", "Site & <Brand>", 7
+	previousVerification, previousRegister, previousPasswordRegister := common.EmailVerificationEnabled, common.RegisterEnabled, common.PasswordRegisterEnabled
+	common.EmailVerificationEnabled, common.RegisterEnabled, common.PasswordRegisterEnabled = true, true, true
 	t.Cleanup(func() {
 		system_setting.ServerAddress, common.SystemName, common.VerificationValidMinutes = previousAddress, previousName, previousMinutes
+		common.EmailVerificationEnabled, common.RegisterEnabled, common.PasswordRegisterEnabled = previousVerification, previousRegister, previousPasswordRegister
 	})
 
 	type sentEmail struct {
@@ -374,14 +377,19 @@ func TestAuthEmailTemplatesThroughDelivery(t *testing.T) {
 		assert.Equal(t, asset, decoded)
 	}
 	var sent []sentEmail
+	rejectDelivery := false
 	http.DefaultTransport = emailHTTPTransport(func(request *http.Request) (*http.Response, error) {
 		var message sentEmail
 		require.NoError(t, common.DecodeJson(request.Body, &message))
+		if rejectDelivery {
+			return &http.Response{StatusCode: 503, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+		}
 		sent = append(sent, message)
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"id":"test"}`))}, nil
 	})
 	router := gin.New()
 	router.GET("/api/verification", SendEmailVerification)
+	router.POST("/api/user/register", Register)
 	router.GET("/api/reset_password", SendPasswordResetEmail)
 	router.POST("/api/user/reset", ResetPassword)
 	requestEmail := func(path, email string) *httptest.ResponseRecorder {
@@ -405,14 +413,45 @@ func TestAuthEmailTemplatesThroughDelivery(t *testing.T) {
 	assert.Contains(t, sent[0].HTML, "7 分钟内有效")
 	checkIllustration(sent[0], "email-register.png")
 	assert.NotContains(t, sent[0].HTML, "<svg")
-	cells := regexp.MustCompile(`>([A-Z])</td>`).FindAllStringSubmatch(sent[0].HTML, -1)
+	cells := regexp.MustCompile(`>([A-Z0-9])</td>`).FindAllStringSubmatch(sent[0].HTML, -1)
 	require.Len(t, cells, 6)
 	var code strings.Builder
 	for _, cell := range cells {
 		code.WriteString(cell[1])
 	}
-	assert.True(t, common.VerifyCodeWithKey(registrationEmail, code.String(), common.EmailVerificationPurpose))
-	assert.False(t, common.VerifyCodeWithKey(registrationEmail, code.String(), common.PasswordResetPurpose))
+	issuedCode := code.String()
+	assert.Regexp(t, `[A-Z]`, issuedCode)
+	assert.Regexp(t, `[0-9]`, issuedCode)
+	assert.Contains(t, sent[0].HTML, "你的注册验证码是 "+issuedCode)
+	assert.False(t, common.VerifyCodeWithKey(registrationEmail, issuedCode, common.PasswordResetPurpose))
+	rejectDelivery = true
+	failedResend := httptest.NewRecorder()
+	router.ServeHTTP(failedResend, httptest.NewRequest(http.MethodGet, "/api/verification?email="+url.QueryEscape(registrationEmail), nil))
+	assert.Contains(t, failedResend.Body.String(), `"success":false`)
+	rejectDelivery = false
+
+	register := func(code string) string {
+		body, err := common.Marshal(model.User{
+			Username: "mail-test-account", Email: registrationEmail, Password: "test-password", VerificationCode: code,
+		})
+		require.NoError(t, err)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/user/register", strings.NewReader(string(body))))
+		require.Equal(t, http.StatusOK, response.Code)
+		return response.Body.String()
+	}
+	pastedCode := strings.ToLower(issuedCode[:3]+" ·\u00a0"+issuedCode[3:]) + "\n"
+	wrongCode := "A" + issuedCode[1:]
+	if wrongCode == issuedCode {
+		wrongCode = "B" + issuedCode[1:]
+	}
+	assert.Contains(t, register(wrongCode), "Verification code is incorrect or has expired")
+	assert.Contains(t, register(pastedCode+"!"), "Verification code is incorrect or has expired")
+	common.VerificationValidMinutes = 0
+	assert.Contains(t, register(pastedCode), "Verification code is incorrect or has expired")
+	common.VerificationValidMinutes = 7
+	require.Contains(t, register(pastedCode), `"success":true`)
+	assert.Contains(t, register(pastedCode), "Verification code is incorrect or has expired")
 
 	const resetEmail = "reset+tag@example.com"
 	t.Cleanup(func() { common.DeleteKey(resetEmail, common.PasswordResetPurpose) })

@@ -196,6 +196,7 @@ export function SignUpForm({
 
   async function handleSendVerificationCode() {
     if (await sendCode(emailValue || '')) {
+      setVerificationCode('')
       setTurnstileToken('')
       setTurnstileWidgetKey((current) => current + 1)
     }

@@ -120,8 +120,8 @@ func CompleteEmailBinding(identity AuthSessionIdentity, token, email, newCode, o
 		if state.Email != email {
 			return ErrAuthFlowInvalid
 		}
-		newCode, newCodeError := common.ValidateEmailBindingCode(newCode)
-		oldCode, oldCodeError := common.ValidateEmailBindingCode(oldCode)
+		newCode, newCodeError := common.NormalizeEmailVerificationCode(newCode)
+		oldCode, oldCodeError := common.NormalizeEmailVerificationCode(oldCode)
 		newValid := newCodeError == nil && common.ValidatePasswordAndHash(newCode, state.NewCodeHash)
 		oldValid := state.OldCodeHash == "" || oldCodeError == nil && common.ValidatePasswordAndHash(oldCode, state.OldCodeHash)
 		if !newValid || !oldValid {

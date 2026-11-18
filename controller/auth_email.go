@@ -18,13 +18,13 @@ import (
 var authEmailFS embed.FS
 
 type authEmailData struct {
-	Language string
-	Subject  string
-	Params   map[string]any
-	Digits   []string
-	Link     string
-	ImageURL template.URL
-	Year     int
+	Language       string
+	Subject        string
+	Params         map[string]any
+	CodeCharacters []string
+	Link           string
+	ImageURL       template.URL
+	Year           int
 }
 
 var authEmailTemplates = template.Must(template.New("auth-email").Option("missingkey=error").Funcs(template.FuncMap{

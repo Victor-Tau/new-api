@@ -325,8 +325,10 @@ func (mailbox *securityMailbox) code(t *testing.T, receiver string) string {
 	mailbox.mutex.Lock()
 	defer mailbox.mutex.Unlock()
 	for index := len(mailbox.mail[receiver]) - 1; index >= 0; index-- {
-		match := regexp.MustCompile(`<strong>([A-Z]{6})</strong>`).FindStringSubmatch(mailbox.mail[receiver][index])
+		match := regexp.MustCompile(`<strong>([A-Z0-9]{6})</strong>`).FindStringSubmatch(mailbox.mail[receiver][index])
 		if len(match) == 2 {
+			require.Regexp(t, `[A-Z]`, match[1])
+			require.Regexp(t, `[0-9]`, match[1])
 			return match[1]
 		}
 	}
@@ -632,7 +634,8 @@ func TestSecurityAccountEmailConfirmationAndAudit(t *testing.T) {
 				require.NoError(t, err)
 				assert.Equal(t, previous, stored.Email)
 			}
-			request, err := common.Marshal(map[string]string{"flow_token": flow.FlowToken, "new_code": newCode, "old_code": oldCode})
+			pastedCode := strings.ToLower(newCode[:3] + " · " + newCode[3:])
+			request, err := common.Marshal(map[string]string{"flow_token": flow.FlowToken, "new_code": pastedCode, "old_code": oldCode})
 			require.NoError(t, err)
 			response := securityEnrollmentRequest("POST", "/api/oauth/email/bind", string(request), "", identity, EmailBind)
 			var result securityEnrollmentResponse

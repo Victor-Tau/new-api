@@ -141,9 +141,9 @@ export function EmailBindDialog(props: EmailBindDialogProps) {
       return
     }
     if (expired) return
-    const newCode = values.newCode.trim()
-    const oldCode = values.oldCode.trim()
-    if (!/^(?:[A-Z]{6}|[0-9]{6})$/.test(newCode)) {
+    const newCode = values.newCode.replaceAll(/[\s·\u200b]/g, '')
+    const oldCode = values.oldCode.replaceAll(/[\s·\u200b]/g, '')
+    if (!/^[A-Za-z0-9]{6}$/.test(newCode)) {
       form.setError(
         'newCode',
         { message: 'Enter the 6-character email verification code.' },
@@ -151,7 +151,7 @@ export function EmailBindDialog(props: EmailBindDialogProps) {
       )
       return
     }
-    if (flow.old_email_required && !/^(?:[A-Z]{6}|[0-9]{6})$/.test(oldCode)) {
+    if (flow.old_email_required && !/^[A-Za-z0-9]{6}$/.test(oldCode)) {
       form.setError(
         'oldCode',
         { message: 'Enter the 6-character email verification code.' },
@@ -275,7 +275,6 @@ export function EmailBindDialog(props: EmailBindDialogProps) {
                           autoComplete='one-time-code'
                           autoCapitalize='characters'
                           spellCheck={false}
-                          maxLength={6}
                           disabled={security.pending || expired}
                         />
                       </FormControl>
@@ -301,7 +300,6 @@ export function EmailBindDialog(props: EmailBindDialogProps) {
                             autoComplete='one-time-code'
                             autoCapitalize='characters'
                             spellCheck={false}
-                            maxLength={6}
                             disabled={security.pending || expired}
                           />
                         </FormControl>

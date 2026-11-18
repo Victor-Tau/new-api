@@ -238,20 +238,20 @@ func SendEmailVerification(c *gin.Context) {
 	// The address may not belong to an account yet, so the mail follows the
 	// request language.
 	message, err := renderAuthEmail("email-register.html", i18n.MsgEmailVerificationSubject, i18n.StatedLang(c), authEmailData{
-		Params: map[string]any{"Code": code},
-		Digits: strings.Split(code, ""),
+		Params:         map[string]any{"Code": code},
+		CodeCharacters: strings.Split(code, ""),
 	})
 	if err != nil {
 		logger.LogError(c.Request.Context(), err.Error())
 		common.ApiErrorT(c, "Failed to send verification email")
 		return
 	}
-	common.RegisterVerificationCodeWithKey(email, code, common.EmailVerificationPurpose)
 	err = common.SendEmailWithInlinePNG(message.subject, email, message.html, message.image)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	common.RegisterVerificationCodeWithKey(email, code, common.EmailVerificationPurpose)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
