@@ -2452,6 +2452,7 @@
     "Enter new tag name or leave empty": "Enter new tag name or leave blank",
     "Enter new token to update": "Nhập mã thông báo mới để cập nhật",
     "Enter one API key per line for batch creation": "Nhập một khóa API mỗi dòng để tạo hàng loạt",
+    "Enter one domain per line. Use @*.edu.cn for subdomains such as thu.edu.cn. Add edu.cn to also allow the root domain.": "Nhập một tên miền trên mỗi dòng. Dùng @*.edu.cn cho các tên miền phụ như thu.edu.cn. Thêm edu.cn để cho phép cả tên miền gốc.",
     "Enter one key per line for batch creation": "Nhập một khóa mỗi dòng để tạo hàng loạt",
     "Enter one key per line, format: {{format}}": "Nhập một khóa mỗi dòng, định dạng: {{format}}",
     "Enter one website address per line, such as https://example.com. Do not include a page path.": "Nhập mỗi địa chỉ trang trên một dòng, ví dụ https://example.com. Không kèm đường dẫn trang.",

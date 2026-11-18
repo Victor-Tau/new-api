@@ -2458,6 +2458,7 @@
     "Enter new tag name or leave empty": "輸入新標籤名稱或留空",
     "Enter new token to update": "輸入新令牌以更新",
     "Enter one API key per line for batch creation": "每行輸入一個 API 金鑰進行大量建立",
+    "Enter one domain per line. Use @*.edu.cn for subdomains such as thu.edu.cn. Add edu.cn to also allow the root domain.": "每行填寫一個網域。使用 @*.edu.cn 可允許 thu.edu.cn 等子網域。如需允許根網域，請另加一行 edu.cn。",
     "Enter one key per line for batch creation": "每行輸入一個金鑰進行大量建立",
     "Enter one key per line, format: {{format}}": "每行輸入一個金鑰，格式：{{format}}",
     "Enter one website address per line, such as https://example.com. Do not include a page path.": "每行填寫一個網站位址，例如 https://example.com，不要帶後面的頁面路徑。",

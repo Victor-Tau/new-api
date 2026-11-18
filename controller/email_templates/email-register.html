@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="{{.Language}}">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>{{.Subject}}</title>
+  </head>
+  <body style="margin:0;padding:0;background:#f3f3f0;-webkit-font-smoothing:antialiased;">
+    <!-- 预览文本：收件箱列表里显示在标题后 -->
+    <div style="display:none;max-height:0;overflow:hidden;opacity:0;color:transparent;">
+      {{t . "email.verification.preview"}}
+    </div>
+
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f3f3f0;">
+      <tr>
+        <td align="center" style="padding:48px 16px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+            style="max-width:520px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;color:#1c1b18;">
+
+            <!-- 品牌 -->
+            <tr>
+              <td align="center" style="padding:0 0 24px;font-size:13px;font-weight:600;letter-spacing:3px;color:#858177;">
+                {{.Params.SystemName}}
+              </td>
+            </tr>
+
+            <!-- 卡片 -->
+            <tr>
+              <td style="background:#ffffff;border:1px solid #e9e8e4;border-radius:24px;padding:48px 40px 40px;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                  <!-- Blip：开心表情，静态 -->
+                  <tr>
+                    <td align="center" style="padding-bottom:28px;">
+                      <img src="{{.ImageURL}}" width="88" height="88" alt="" style="display:block;border:0;" />
+                    </td>
+                  </tr>
+
+                  <tr>
+                    <td align="center" style="font-size:26px;line-height:34px;font-weight:700;letter-spacing:-0.4px;padding-bottom:12px;">
+                      {{t . "email.verification.greeting"}}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td align="center" style="font-size:15px;line-height:24px;color:#57544d;padding-bottom:32px;">
+                      {{t . "email.verification.intro"}}<br />{{t . "email.verification.code"}}
+                    </td>
+                  </tr>
+
+                  <!-- 验证码：逐位格子 -->
+                  <tr>
+                    <td align="center" style="padding-bottom:16px;">
+                      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:340px;table-layout:fixed;">
+                        <tr>
+                          {{range $i, $digit := .Digits}}
+                          {{if eq $i 3}}<td style="width:6%;text-align:center;color:#c9c6bf;font-size:20px;">·</td>{{else if $i}}<td style="width:2%;"></td>{{end}}
+                          <td style="width:14%;height:60px;background:#f8f8f6;border:1px solid #e9e8e4;border-radius:12px;text-align:center;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:28px;font-weight:600;color:#1c1b18;">{{$digit}}</td>
+                          {{end}}
+                        </tr>
+                      </table>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td align="center" style="font-size:13px;line-height:20px;color:#858177;padding-bottom:36px;">
+                      {{t . "email.verification.validity"}}
+                    </td>
+                  </tr>
+
+                  <tr>
+                    <td style="border-top:1px solid #efeeea;padding-top:24px;font-size:13px;line-height:21px;color:#858177;" align="center">
+                      {{t . "email.verification.ignore"}}
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+
+            <!-- 页脚 -->
+            <tr>
+              <td align="center" style="padding:28px 16px 0;font-size:12px;line-height:20px;color:#a3a097;">
+                {{t . "email.automated_footer"}}<br />
+                © {{.Year}} {{.Params.SystemName}}
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

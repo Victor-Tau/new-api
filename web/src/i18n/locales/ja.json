@@ -2452,6 +2452,7 @@
     "Enter new tag name or leave empty": "新しいタグ名を入力するか、空欄にする",
     "Enter new token to update": "更新する新しいトークンを入力",
     "Enter one API key per line for batch creation": "一括作成のため、1行に1つのAPIキーを入力してください",
+    "Enter one domain per line. Use @*.edu.cn for subdomains such as thu.edu.cn. Add edu.cn to also allow the root domain.": "1行に1つのドメインを入力してください。thu.edu.cn などのサブドメインには @*.edu.cn を使います。ルートドメインも許可するには edu.cn を追加してください。",
     "Enter one key per line for batch creation": "一括作成のため、1行に1つのキーを入力してください",
     "Enter one key per line, format: {{format}}": "1行に1つのキーを入力してください。形式: {{format}}",
     "Enter one website address per line, such as https://example.com. Do not include a page path.": "https://example.com のように、サイトのアドレスを1行に1つ入力します。ページのパスは含めません。",

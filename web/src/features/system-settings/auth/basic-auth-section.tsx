@@ -248,14 +248,14 @@ export function BasicAuthSection({ defaultValues }: BasicAuthSectionProps) {
                 <FormLabel>{t('Email Domain Whitelist')}</FormLabel>
                 <FormControl>
                   <Textarea
-                    placeholder={t('example.com&#10;company.com')}
+                    placeholder={'example.com\n@*.edu.cn'}
                     rows={4}
                     {...field}
                   />
                 </FormControl>
                 <FormDescription>
                   {t(
-                    'One domain per line (only used when domain restriction is enabled)'
+                    'Enter one domain per line. Use @*.edu.cn for subdomains such as thu.edu.cn. Add edu.cn to also allow the root domain.'
                   )}
                 </FormDescription>
                 <FormMessage />

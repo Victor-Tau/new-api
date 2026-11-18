@@ -2452,6 +2452,7 @@
     "Enter new tag name or leave empty": "Введите новое имя тега или оставьте пустым",
     "Enter new token to update": "Введите новый токен для обновления",
     "Enter one API key per line for batch creation": "Введите по одному API-ключу на строку для пакетного создания",
+    "Enter one domain per line. Use @*.edu.cn for subdomains such as thu.edu.cn. Add edu.cn to also allow the root domain.": "Укажите по одному домену в строке. Используйте @*.edu.cn для поддоменов, таких как thu.edu.cn. Чтобы разрешить и корневой домен, добавьте edu.cn.",
     "Enter one key per line for batch creation": "Введите по одному ключу на строку для пакетного создания",
     "Enter one key per line, format: {{format}}": "Введите по одному ключу на строку, формат: {{format}}",
     "Enter one website address per line, such as https://example.com. Do not include a page path.": "Введите по одному адресу сайта на строку, например https://example.com, без пути страницы.",

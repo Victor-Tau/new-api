@@ -2458,6 +2458,7 @@
     "Enter new tag name or leave empty": "Enter new tag name or leave empty",
     "Enter new token to update": "Enter new token to update",
     "Enter one API key per line for batch creation": "Enter one API key per line for batch creation",
+    "Enter one domain per line. Use @*.edu.cn for subdomains such as thu.edu.cn. Add edu.cn to also allow the root domain.": "Enter one domain per line. Use @*.edu.cn for subdomains such as thu.edu.cn. Add edu.cn to also allow the root domain.",
     "Enter one key per line for batch creation": "Enter one key per line for batch creation",
     "Enter one key per line, format: {{format}}": "Enter one key per line, format: {{format}}",
     "Enter one website address per line, such as https://example.com. Do not include a page path.": "Enter one website address per line, such as https://example.com. Do not include a page path.",

@@ -2,15 +2,20 @@ package controller
 
 import (
 	"errors"
+	"html"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -248,4 +253,187 @@ func TestEmailKeyStatusIsDerivedAndReadOnly(t *testing.T) {
 	UpdateOption(context)
 	assert.Contains(t, response.Body.String(), `"success":false`)
 	assert.Contains(t, response.Body.String(), "read-only")
+}
+
+func TestRegistrationEmailDomainWhitelist(t *testing.T) {
+	setupManageUserTestDB(t)
+	configureEmailDelivery(t, map[string]string{
+		"EmailProvider": "resend", "ResendApiKey": "test-key", "ResendFrom": "sender@example.com",
+	})
+	previousWhitelist := common.EmailDomainWhitelist
+	previousDomainRestriction, previousAliasRestriction := common.EmailDomainRestrictionEnabled, common.EmailAliasRestrictionEnabled
+	previousVerification, previousRegister, previousPasswordRegister := common.EmailVerificationEnabled, common.RegisterEnabled, common.PasswordRegisterEnabled
+	t.Cleanup(func() {
+		common.EmailDomainWhitelist = previousWhitelist
+		common.EmailDomainRestrictionEnabled, common.EmailAliasRestrictionEnabled = previousDomainRestriction, previousAliasRestriction
+		common.EmailVerificationEnabled, common.RegisterEnabled, common.PasswordRegisterEnabled = previousVerification, previousRegister, previousPasswordRegister
+	})
+	common.EmailVerificationEnabled, common.RegisterEnabled, common.PasswordRegisterEnabled = true, true, true
+	var sent int
+	http.DefaultTransport = emailHTTPTransport(func(*http.Request) (*http.Response, error) {
+		sent++
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"id":"test"}`)), Header: make(http.Header)}, nil
+	})
+	router := gin.New()
+	router.GET("/api/verification", SendEmailVerification)
+	router.POST("/api/user/register", Register)
+
+	for _, tc := range []struct {
+		name, rule, email                  string
+		allow, blockAlias, disableRestrict bool
+	}{
+		{name: "plain rule matches its own domain", rule: "edu.cn", email: "user@edu.cn", allow: true},
+		{name: "plain rule keeps exact matching", rule: "edu.cn", email: "user@thu.edu.cn"},
+		{name: "wildcard matches a subdomain", rule: "@*.edu.cn", email: "USER@THU.EDU.CN", allow: true},
+		{name: "wildcard matches nested subdomains and ignores rule casing and spaces", rule: " *.Edu.Cn ", email: "user@mail.thu.edu.cn", allow: true},
+		{name: "wildcard excludes the root domain", rule: "@*.edu.cn", email: "user@edu.cn"},
+		{name: "wildcard requires a dot boundary", rule: "@*.edu.cn", email: "user@notedu.cn"},
+		{name: "wildcard rejects suffix extension", rule: "@*.edu.cn", email: "user@thu.edu.cn.example"},
+		{name: "bare star cannot allow arbitrary domains", rule: "@*", email: "user@example.com"},
+		{name: "alias restrictions still apply", rule: "@*.edu.cn", email: "user+alias@thu.edu.cn", blockAlias: true},
+		{name: "disabled restriction ignores the rules", rule: "@*.edu.cn", email: "user@example.com", allow: true, disableRestrict: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			common.EmailDomainWhitelist = []string{"example.org", tc.rule}
+			common.EmailDomainRestrictionEnabled = !tc.disableRestrict
+			common.EmailAliasRestrictionEnabled = tc.blockAlias
+			defer common.DeleteKey(model.NormalizeEmail(tc.email), common.EmailVerificationPurpose)
+			before := sent
+			response := httptest.NewRecorder()
+			router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/verification?email="+url.QueryEscape(tc.email), nil))
+			require.Equal(t, http.StatusOK, response.Code)
+			if tc.allow {
+				assert.Contains(t, response.Body.String(), `"success":true`)
+				assert.Equal(t, before+1, sent)
+				return
+			}
+			assert.Contains(t, response.Body.String(), `"code":"EMAIL_ADDRESS_REJECTED"`)
+			assert.Equal(t, before, sent)
+		})
+	}
+
+	const email, code = "student@thu.edu.cn", "012345"
+	common.RegisterVerificationCodeWithKey(email, code, common.EmailVerificationPurpose)
+	t.Cleanup(func() { common.DeleteKey(email, common.EmailVerificationPurpose) })
+	register := func(code string) string {
+		body, err := common.Marshal(model.User{
+			Username: "new-student", Email: email, Password: "test-password", VerificationCode: code,
+		})
+		require.NoError(t, err)
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/user/register", strings.NewReader(string(body))))
+		require.Equal(t, http.StatusOK, response.Code)
+		return response.Body.String()
+	}
+	common.EmailDomainRestrictionEnabled = true
+	common.EmailDomainWhitelist = []string{"edu.cn"}
+	assert.Contains(t, register(code), `"code":"EMAIL_ADDRESS_REJECTED"`, "registration must enforce the current policy")
+	common.EmailDomainWhitelist = []string{"@*.edu.cn"}
+	assert.Contains(t, register("wrong"), "Verification code is incorrect or has expired")
+	assert.Contains(t, register(code), `"success":true`)
+}
+
+func TestAuthEmailTemplatesThroughDelivery(t *testing.T) {
+	db := setupManageUserTestDB(t)
+	configureEmailDelivery(t, map[string]string{
+		"EmailProvider": "resend", "ResendApiKey": "test-key", "ResendFrom": "sender@example.com",
+	})
+	previousAddress, previousName, previousMinutes := system_setting.ServerAddress, common.SystemName, common.VerificationValidMinutes
+	system_setting.ServerAddress, common.SystemName, common.VerificationValidMinutes = "https://dashboard.example.com/", "Site & <Brand>", 7
+	t.Cleanup(func() {
+		system_setting.ServerAddress, common.SystemName, common.VerificationValidMinutes = previousAddress, previousName, previousMinutes
+	})
+
+	type sentEmail struct {
+		To      []string `json:"to"`
+		Subject string   `json:"subject"`
+		HTML    string   `json:"html"`
+	}
+	var sent []sentEmail
+	http.DefaultTransport = emailHTTPTransport(func(request *http.Request) (*http.Response, error) {
+		var message sentEmail
+		require.NoError(t, common.DecodeJson(request.Body, &message))
+		sent = append(sent, message)
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"id":"test"}`))}, nil
+	})
+	router := gin.New()
+	router.GET("/api/verification", SendEmailVerification)
+	router.GET("/api/reset_password", SendPasswordResetEmail)
+	router.POST("/api/user/reset", ResetPassword)
+	requestEmail := func(path, email string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodGet, "https://untrusted.example"+path+"?email="+url.QueryEscape(email), nil)
+		request.Header.Set("Accept-Language", "zh-CN")
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		assert.Equal(t, http.StatusOK, response.Code)
+		assert.Contains(t, response.Body.String(), `"success":true`)
+		return response
+	}
+
+	const registrationEmail = "register@example.com"
+	t.Cleanup(func() { common.DeleteKey(registrationEmail, common.EmailVerificationPurpose) })
+	requestEmail("/api/verification", registrationEmail)
+	require.Len(t, sent, 1)
+	assert.Equal(t, []string{registrationEmail}, sent[0].To)
+	assert.Equal(t, "验证你的邮箱 · Site & <Brand>", sent[0].Subject)
+	assert.Contains(t, sent[0].HTML, `<html lang="zh-CN">`)
+	assert.Contains(t, sent[0].HTML, "欢迎加入 Site &amp; &lt;Brand&gt;")
+	assert.Contains(t, sent[0].HTML, "7 分钟内有效")
+	assert.Contains(t, sent[0].HTML, `src="https://dashboard.example.com/email-assets/email-register.png"`)
+	assert.NotContains(t, sent[0].HTML, "<svg")
+	cells := regexp.MustCompile(`>([0-9a-f])</td>`).FindAllStringSubmatch(sent[0].HTML, -1)
+	require.Len(t, cells, 6)
+	var code strings.Builder
+	for _, cell := range cells {
+		code.WriteString(cell[1])
+	}
+	assert.True(t, common.VerifyCodeWithKey(registrationEmail, code.String(), common.EmailVerificationPurpose))
+	assert.False(t, common.VerifyCodeWithKey(registrationEmail, code.String(), common.PasswordResetPurpose))
+
+	const resetEmail = "reset+tag@example.com"
+	t.Cleanup(func() { common.DeleteKey(resetEmail, common.PasswordResetPurpose) })
+	user := model.User{Username: "reset-user", Email: resetEmail}
+	user.SetSetting(dto.UserSetting{Language: "zhTW"})
+	require.NoError(t, db.Create(&user).Error)
+	known := requestEmail("/api/reset_password", resetEmail)
+	unknown := requestEmail("/api/reset_password", "unknown@example.com")
+	assert.Equal(t, known.Body.String(), unknown.Body.String())
+	require.Len(t, sent, 2)
+	assert.Equal(t, []string{resetEmail}, sent[1].To)
+	assert.Equal(t, "重設你的密碼 · Site & <Brand>", sent[1].Subject)
+	assert.Contains(t, sent[1].HTML, `<html lang="zh-TW">`)
+	assert.Contains(t, sent[1].HTML, "7 分鐘內有效")
+	assert.Contains(t, html.UnescapeString(sent[1].HTML), `>reset+tag@example.com</strong>`)
+	assert.Contains(t, sent[1].HTML, `src="https://dashboard.example.com/email-assets/email-reset-password.png"`)
+	assert.NotContains(t, sent[1].HTML, "untrusted.example")
+	assert.NotContains(t, sent[1].HTML, "<svg")
+	href := regexp.MustCompile(`href="([^"]+)"`).FindStringSubmatch(sent[1].HTML)
+	require.Len(t, href, 2)
+	assert.Equal(t, 2, strings.Count(sent[1].HTML, href[1]), "button and backup URL must match")
+	link, err := url.Parse(html.UnescapeString(href[1]))
+	require.NoError(t, err)
+	assert.Equal(t, "https", link.Scheme)
+	assert.Equal(t, "dashboard.example.com", link.Host)
+	assert.Equal(t, "/user/reset", link.Path)
+	assert.Equal(t, resetEmail, link.Query().Get("email"))
+	token := link.Query().Get("token")
+	require.NotEmpty(t, token)
+	assert.NotContains(t, sent[1].Subject, token)
+	body, err := common.Marshal(PasswordResetRequest{Email: resetEmail, Token: token})
+	require.NoError(t, err)
+	reset := func() string {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/user/reset", strings.NewReader(string(body))))
+		return response.Body.String()
+	}
+	common.VerificationValidMinutes = 0
+	assert.Contains(t, reset(), `"success":false`, "expired reset links must fail")
+	common.VerificationValidMinutes = 7
+	assert.Contains(t, reset(), `"success":true`)
+	assert.Contains(t, reset(), `"success":false`, "used reset links must fail")
+
+	system_setting.ServerAddress = "javascript:invalid"
+	failed := requestEmail("/api/reset_password", resetEmail)
+	assert.Equal(t, unknown.Body.String(), failed.Body.String())
+	assert.Len(t, sent, 2, "invalid site URL must prevent sending a reset link")
 }
