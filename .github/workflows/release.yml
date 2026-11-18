@@ -48,6 +48,7 @@ jobs:
           GOWORK: 'off'
         run: |
           mkdir -p build
+          go mod download github.com/MoeForge/moejs
           profile="$(go list -m -f '{{.Dir}}' github.com/MoeForge/moejs)/default.pgo"
           go build -trimpath -pgo="$profile" -ldflags "-s -w -X github.com/QuantumNous/new-api/common.Version=$RELEASE_VERSION" -o "build/new-api-$RELEASE_VERSION" .
           cd build

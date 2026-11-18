@@ -24,6 +24,7 @@ build-all-web: build-web
 build-linux-amd64:
 	@git check-ref-format "refs/tags/$$RELEASE_VERSION" || { echo "Set RELEASE_VERSION to a valid release tag"; exit 1; }
 	@mkdir -p build
+	@GOWORK=off go mod download github.com/MoeForge/moejs
 	@profile=$$(GOWORK=off go list -m -f '{{.Dir}}' github.com/MoeForge/moejs)/default.pgo && \
 		GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOWORK=off go build -trimpath -pgo="$$profile" \
 			-ldflags "-s -w -X github.com/QuantumNous/new-api/common.Version=$$RELEASE_VERSION" \
