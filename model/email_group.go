@@ -17,6 +17,15 @@ func emailDomain(email string) string {
 	return domain
 }
 
+// A configured VIP group supplies the discount suffix. The account's level
+// comes from its growth, including when a rule targets a plain VIP group.
+func emailDiscountGroup(group string) string {
+	if _, special, vip := common.SplitUserGroup(group); vip {
+		return special
+	}
+	return group
+}
+
 func groupForDomain(settings *EmailGroupSettings, domain string) string {
 	group := ""
 	length := 0
@@ -24,7 +33,7 @@ func groupForDomain(settings *EmailGroupSettings, domain string) string {
 		if len(rule.Suffix) > length &&
 			(domain == rule.Suffix || strings.HasSuffix(domain, "."+rule.Suffix)) &&
 			ratio_setting.ContainsGroupRatio(rule.Group) {
-			group = rule.Group
+			group = emailDiscountGroup(rule.Group)
 			length = len(rule.Suffix)
 		}
 	}

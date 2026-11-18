@@ -101,22 +101,20 @@ export function VipManagementSection({
     applyOnBind: email.apply_on_bind,
     rules: email.rules ?? [],
   }
-  const specialGroups = Object.keys(groups ?? {}).filter(
-    (group) =>
-      !/^vip[0-5](?:$|[-－—_·])/i.test(group) &&
-      !['default', 'vip', 'svip'].includes(group)
+  const discountGroups = Object.keys(groups ?? {}).filter(
+    (group) => !['default', 'vip', 'svip'].includes(group)
   )
   return (
-    <VipManagementForm defaultValues={values} specialGroups={specialGroups} />
+    <VipManagementForm defaultValues={values} discountGroups={discountGroups} />
   )
 }
 
 function VipManagementForm({
   defaultValues,
-  specialGroups,
+  discountGroups,
 }: {
   defaultValues: VIPForm
-  specialGroups: string[]
+  discountGroups: string[]
 }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
@@ -285,6 +283,9 @@ function VipManagementForm({
                 {t('Apply on email binding')}
               </Label>
             </div>
+            <p className='text-muted-foreground text-sm'>
+              {t('VIP discounts follow the user’s current VIP level.')}
+            </p>
             {rules.fields.map((rule, index) => (
               <div
                 key={rule.id}
@@ -318,12 +319,12 @@ function VipManagementForm({
                     <NativeSelectOption value=''>
                       {t('Select a group')}
                     </NativeSelectOption>
-                    {rule.group && !specialGroups.includes(rule.group) && (
+                    {rule.group && !discountGroups.includes(rule.group) && (
                       <NativeSelectOption value={rule.group}>
                         {rule.group}
                       </NativeSelectOption>
                     )}
-                    {specialGroups.map((group) => (
+                    {discountGroups.map((group) => (
                       <NativeSelectOption key={group} value={group}>
                         {group}
                       </NativeSelectOption>

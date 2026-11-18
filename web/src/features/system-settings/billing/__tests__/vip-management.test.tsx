@@ -49,7 +49,7 @@ function Fixture() {
     VipTierSetting: JSON.stringify({ enabled: true, window_days: 365, tiers }),
     EmailGroupRules: '{"enabled":true,"apply_on_bind":true,"rules":[]}',
     TopupGroupRatio: '{"VIP1":0.99,"学生":0.8}',
-    GroupRatio: '{"VIP0":1,"学生":0.8}',
+    GroupRatio: '{"VIP0":1,"VIP1-大学生优惠":0.8,"学生":0.8}',
   } as BillingSettings
 
   return (
@@ -81,8 +81,15 @@ it('links to VIP management and saves tier and email rule changes together', asy
     fireEvent.change(screen.getByLabelText('Domain suffix'), {
       target: { value: 'edu.cn' },
     })
-    fireEvent.change(screen.getByLabelText('Discount group'), {
-      target: { value: '学生' },
+    const discountGroup = screen.getByLabelText('Discount group')
+    expect(
+      within(discountGroup).getByRole('option', { name: 'VIP0' })
+    ).toBeVisible()
+    expect(
+      within(discountGroup).getByRole('option', { name: '学生' })
+    ).toBeVisible()
+    fireEvent.change(discountGroup, {
+      target: { value: 'VIP1-大学生优惠' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
 
@@ -92,7 +99,7 @@ it('links to VIP management and saves tier and email rule changes together', asy
       email_group_rules: {
         enabled: true,
         apply_on_bind: true,
-        rules: [{ suffix: 'edu.cn', group: '学生' }],
+        rules: [{ suffix: 'edu.cn', group: 'VIP1-大学生优惠' }],
       },
       topup_ratios: { VIP0: 1, VIP1: 0.96, VIP2: 1, VIP3: 1, VIP4: 1, VIP5: 1 },
     })

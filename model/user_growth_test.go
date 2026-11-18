@@ -173,29 +173,51 @@ func TestVIPDatabaseLifecycle(t *testing.T) {
 			assert.EqualValues(t, 3, logs)
 
 			t.Run("settings_and_email", func(t *testing.T) {
-				require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"VIP0":1,"大学生优惠":0.8}`))
-				require.NoError(t, updateOptionMap(emailGroupOption,
-					`{"enabled":true,"apply_on_bind":true,"rules":[{"suffix":"edu.cn","group":"大学生优惠"}]}`))
+				require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"VIP0":1,"VIP1":1,"VIP1-大学生优惠":1,"VIP2-大学生优惠":1}`))
+				require.NoError(t, DB.Create(&Option{Key: topupRatioOption, Value: `{"大学生优惠":0.8,"VIP2-大学生优惠":0.75}`}).Error)
+				req := VIPOptionUpdate{
+					Tiers: CurrentVIPSettings(),
+					EmailGroups: EmailGroupSettings{Enabled: true, ApplyOnBind: true, Rules: []EmailGroupRule{
+						{Suffix: "edu.cn", Group: "VIP2-大学生优惠"},
+						{Suffix: "staff.edu.cn", Group: "VIP1"},
+					}},
+					TierRatios: map[string]float64{"VIP0": 1, "VIP1": 0.99, "VIP2": 0.97, "VIP3": 0.95, "VIP4": 0.92, "VIP5": 0.9},
+				}
+				require.NoError(t, SaveVIPOptions(req))
 				assert.Empty(t, GroupForEmail("student@fakeedu.cn"))
+				assert.Empty(t, GroupForEmail("teacher@staff.edu.cn"))
 				assert.Equal(t, "大学生优惠", GroupForEmail("student@Pku.Edu.Cn"))
+
+				// Binding a matching address grants the discount at the user's current level.
+				require.NoError(t, DB.Model(&user).Updates(userGroupColumns("VIP1")).Error)
 				require.NoError(t, ModifyUserSetting(user.Id, func(setting *dto.UserSetting) {
-					setting.EmailGroup = "大学生优惠"
 					setting.Language = "zh"
 					setting.Pebble = &dto.PebbleAvatar{Palette: 4}
 				}))
+				require.NoError(t, DB.Transaction(func(tx *gorm.DB) error {
+					_, err := changeEmailGroup(tx, user.Id, "student@pku.edu.cn", true)
+					return err
+				}))
+				require.NoError(t, DB.First(&user, user.Id).Error)
+				assert.Equal(t, "VIP1-大学生优惠", user.Group)
+				assert.Equal(t, "大学生优惠", user.GetSetting().EmailGroup)
+
+				next := TopUp{UserId: user.Id, TradeNo: "student-upgrade", Amount: 1500, Status: common.TopUpStatusPending, PaymentProvider: PaymentProviderEpay}
+				require.NoError(t, DB.Create(&next).Error)
+				_, err := RechargeEpay(next.TradeNo, "", "")
+				require.NoError(t, err)
+				require.NoError(t, DB.First(&user, user.Id).Error)
+				require.NotNil(t, user.VIPLevel)
+				assert.Equal(t, 2, *user.VIPLevel)
+				assert.Equal(t, "VIP2-大学生优惠", user.Group)
+				assert.Equal(t, "大学生优惠", user.GetSetting().EmailGroup)
 				require.NoError(t, user.ClearBinding("email"))
-				assert.Equal(t, "VIP1", user.Group)
+				assert.Equal(t, "VIP2", user.Group)
 				assert.Empty(t, user.GetSetting().EmailGroup)
 				assert.Equal(t, "zh", user.GetSetting().Language)
 				require.NotNil(t, user.GetSetting().Pebble)
 				assert.Equal(t, 4, user.GetSetting().Pebble.Palette)
 
-				require.NoError(t, DB.Create(&Option{Key: topupRatioOption, Value: `{"大学生优惠":0.8,"VIP2-大学生优惠":0.75}`}).Error)
-				req := VIPOptionUpdate{
-					Tiers: CurrentVIPSettings(), EmailGroups: *emailGroupSettings.Load(),
-					TierRatios: map[string]float64{"VIP0": 1, "VIP1": 0.99, "VIP2": 0.97, "VIP3": 0.95, "VIP4": 0.92, "VIP5": 0.9},
-				}
-				require.NoError(t, SaveVIPOptions(req))
 				assert.Equal(t, 0.75, common.GetTopupGroupRatio("VIP2-大学生优惠"))
 				assert.InDelta(t, 0.99*0.8, common.GetTopupGroupRatio("VIP1-大学生优惠"), 1e-10)
 				req.Tiers.Tiers = append([]VipTier(nil), req.Tiers.Tiers...)

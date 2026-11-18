@@ -106,10 +106,9 @@ func parseEmailGroupSettings(raw string, requireGroups bool) (EmailGroupSettings
 	for i, rule := range settings.Rules {
 		suffix := strings.ToLower(strings.TrimSpace(rule.Suffix))
 		group := strings.TrimSpace(rule.Group)
-		_, _, vip := common.SplitUserGroup(group)
 		if suffix == "" || strings.HasPrefix(suffix, ".") || strings.ContainsAny(suffix, "@ /\\\t\r\n") ||
-			seen[suffix] || group == "" || vip || group == "default" || group == "vip" || group == "svip" ||
-			len([]rune(common.ComposeUserGroup(0, group))) > 64 ||
+			seen[suffix] || group == "" || group == "default" || group == "vip" || group == "svip" ||
+			len([]rune(group)) > 64 || len([]rune(common.ComposeUserGroup(0, emailDiscountGroup(group)))) > 64 ||
 			(requireGroups && !ratio_setting.ContainsGroupRatio(group)) {
 			return settings, common.NewMessage("Invalid email domain or discount group")
 		}
