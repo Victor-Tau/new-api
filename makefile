@@ -7,17 +7,28 @@ DEV_API_SERVICE = new-api
 DEV_POSTGRES_DB = new-api
 DEV_POSTGRES_USER = root
 DEV_SQLITE_PATH ?= one-api.db
+RELEASE_VERSION ?= $(shell cat VERSION)
+export RELEASE_VERSION
 
-.PHONY: all build-web build-all-web start-api dev dev-api dev-api-rebuild dev-web reset-setup test
+.PHONY: all build-linux-amd64 build-web build-all-web start-api dev dev-api dev-api-rebuild dev-web reset-setup test
 
 all: build-all-web start-api
 
 build-web:
 	@echo "Building web frontend..."
 	@cd $(WEB_DIR) && bun install --frozen-lockfile
-	@cd $(WEB_DIR) && DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION=$$(cat ../VERSION) bun run build
+	@cd $(WEB_DIR) && DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION="$$RELEASE_VERSION" bun run build
 
 build-all-web: build-web
+
+build-linux-amd64:
+	@git check-ref-format "refs/tags/$$RELEASE_VERSION" || { echo "Set RELEASE_VERSION to a valid release tag"; exit 1; }
+	@mkdir -p build
+	@profile=$$(GOWORK=off go list -m -f '{{.Dir}}' github.com/MoeForge/moejs)/default.pgo && \
+		GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOWORK=off go build -trimpath -pgo="$$profile" \
+			-ldflags "-s -w -X github.com/QuantumNous/new-api/common.Version=$$RELEASE_VERSION" \
+			-o "build/new-api-$$RELEASE_VERSION" .
+	@cd build && sha256sum "new-api-$$RELEASE_VERSION" > checksums-linux.txt
 
 start-api:
 	@echo "Starting api dev server..."

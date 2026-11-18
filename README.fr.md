@@ -207,12 +207,14 @@ docker compose logs -f new-api
 
 ### Stockage et configuration
 
+Les versions GitHub de ce dépôt fournissent uniquement le binaire serveur Linux amd64 (x86-64) et sa somme SHA-256. Pour compiler localement, exécutez `make build-web RELEASE_VERSION=v0.1.0` puis `make build-linux-amd64 RELEASE_VERSION=v0.1.0`. Les fichiers sont écrits dans `build/`.
+
 | Composant | Options |
 | --- | --- |
 | Base principale | SQLite, MySQL ≥ 5.7.8 ou PostgreSQL ≥ 9.6 |
 | Base de journaux distincte | Configurée avec `LOG_SQL_DSN` ; prend aussi en charge ClickHouse |
 | Cache | Redis facultatif et cache mémoire ; partagez Redis si les nœuds doivent partager les limites de débit |
-| Plateformes des conteneurs | Linux amd64 / arm64 |
+| Plateforme des conteneurs | Linux amd64 |
 
 | Variable | Rôle |
 | --- | --- |

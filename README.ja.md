@@ -207,12 +207,14 @@ docker compose logs -f new-api
 
 ### ストレージと設定
 
+このリポジトリの GitHub Release では、Linux amd64（x86-64）のサーバーバイナリと SHA-256 チェックサムのみを公開します。ローカルでは `make build-web RELEASE_VERSION=v0.1.0` と `make build-linux-amd64 RELEASE_VERSION=v0.1.0` を順に実行すると、成果物が `build/` に出力されます。
+
 | コンポーネント | 選択肢 |
 | --- | --- |
 | メインデータベース | SQLite、MySQL ≥ 5.7.8、PostgreSQL ≥ 9.6 |
 | 独立したログデータベース | `LOG_SQL_DSN` で設定。ClickHouse にも対応 |
 | キャッシュ | 任意の Redis とメモリキャッシュ。ノード間でレート制限を共有する場合は Redis を共有 |
-| コンテナのプラットフォーム | Linux amd64 / arm64 |
+| コンテナのプラットフォーム | Linux amd64 |
 
 | 環境変数 | 用途 |
 | --- | --- |

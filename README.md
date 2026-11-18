@@ -222,12 +222,14 @@ docker compose logs -f new-api
 
 ### Storage and configuration
 
+GitHub Releases for this repository publish a Linux amd64 (x86-64) server binary and SHA-256 checksum. To build locally, run `make build-web RELEASE_VERSION=v0.1.0` and `make build-linux-amd64 RELEASE_VERSION=v0.1.0`. The binary and checksum are written to `build/`.
+
 | Component | Options |
 | --- | --- |
 | Main database | SQLite, MySQL ≥ 5.7.8, or PostgreSQL ≥ 9.6 |
 | Separate log database | Configure with `LOG_SQL_DSN`; also supports ClickHouse |
 | Cache | Optional Redis plus in-memory caching; use shared Redis when application nodes need shared rate limits |
-| Container platforms | Linux amd64 / arm64 |
+| Container platform | Linux amd64 |
 
 | Variable | Purpose |
 | --- | --- |

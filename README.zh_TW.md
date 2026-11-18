@@ -206,12 +206,14 @@ docker compose logs -f new-api
 
 ### 儲存與設定
 
+此儲存庫的 GitHub Release 僅提供 Linux amd64（x86-64）伺服器二進位檔及 SHA-256 校驗檔。本機建置依序執行 `make build-web RELEASE_VERSION=v0.1.0` 和 `make build-linux-amd64 RELEASE_VERSION=v0.1.0`，產物寫入 `build/`。
+
 | 元件 | 可選方案 |
 | --- | --- |
 | 主資料庫 | SQLite、MySQL ≥ 5.7.8、PostgreSQL ≥ 9.6 |
 | 獨立日誌資料庫 | 透過 `LOG_SQL_DSN` 設定，額外支援 ClickHouse |
 | 快取 | 可選 Redis 與記憶體快取；多節點需要共享限流額度時使用共享 Redis |
-| 容器平台 | Linux amd64 / arm64 |
+| 容器平台 | Linux amd64 |
 
 | 環境變數 | 用途 |
 | --- | --- |

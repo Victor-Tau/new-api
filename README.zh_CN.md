@@ -222,12 +222,14 @@ docker compose logs -f new-api
 
 ### 存储与配置
 
+本仓库的 GitHub Release 仅提供 Linux amd64（x86-64）服务端二进制及 SHA-256 校验文件。本地构建依次运行 `make build-web RELEASE_VERSION=v0.1.0` 和 `make build-linux-amd64 RELEASE_VERSION=v0.1.0`，产物写入 `build/`。
+
 | 组件 | 可选方案 |
 | --- | --- |
 | 主数据库 | SQLite、MySQL ≥ 5.7.8、PostgreSQL ≥ 9.6 |
 | 独立日志库 | 通过 `LOG_SQL_DSN` 配置，额外支持 ClickHouse |
 | 缓存 | 可选 Redis 与内存缓存；多节点需要共享限流额度时使用共享 Redis |
-| 容器平台 | Linux amd64 / arm64 |
+| 容器平台 | Linux amd64 |
 
 | 环境变量 | 用途 |
 | --- | --- |

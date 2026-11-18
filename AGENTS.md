@@ -43,6 +43,10 @@ This is an AI API gateway/proxy built with Go. It aggregates 40+ upstream AI pro
 
 ## Rules
 
+### Release builds
+
+Build and publish server releases only for Linux amd64. Use `make build-web RELEASE_VERSION=<tag>` and `make build-linux-amd64 RELEASE_VERSION=<tag>`. Publish the server binary with its SHA-256 checksum and use only `linux/amd64` for published container images. The manual Electron workflow is for development artifacts.
+
 ### Common Code Quality
 
 - New code should stay direct and readable. Prefer early returns, clear branches, and well-named local variables to deep nesting or layered control flow.
