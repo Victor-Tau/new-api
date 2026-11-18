@@ -635,6 +635,8 @@ func TokenAuth() func(c *gin.Context) {
 				}
 			}
 			userGroup = tokenGroup
+		} else {
+			userGroup = ratio_setting.BillingGroup(userGroup)
 		}
 		common.SetContextKey(c, constant.ContextKeyUsingGroup, userGroup)
 

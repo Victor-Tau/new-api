@@ -142,9 +142,9 @@ func newRelayHarness(t *testing.T) *relayHarness {
 		common.MemoryCacheEnabled, common.LogConsumeEnabled, common.BatchUpdateEnabled, constant.StreamingTimeout = previousMemory, previousLog, previousBatch, previousTimeout
 	})
 	service.InitHttpClient()
-	user := model.User{Username: "provider-relay", Status: common.UserStatusEnabled, Group: "default", Quota: 100_000_000}
+	user := model.User{Username: "provider-relay", Status: common.UserStatusEnabled, Group: "VIP2", Quota: 100_000_000}
 	require.NoError(t, model.DB.Create(&user).Error)
-	token := model.Token{UserId: user.Id, Key: relayTestToken, Status: common.TokenStatusEnabled, ExpiredTime: -1, RemainQuota: 100_000_000, Group: "default"}
+	token := model.Token{UserId: user.Id, Key: relayTestToken, Status: common.TokenStatusEnabled, ExpiredTime: -1, RemainQuota: 100_000_000}
 	require.NoError(t, model.DB.Create(&token).Error)
 	engine := gin.New()
 	SetRelayRouter(engine)
@@ -161,7 +161,7 @@ func newRelayHarness(t *testing.T) *relayHarness {
 
 func (h *relayHarness) newChannel(channelType int, key string) *model.Channel {
 	baseURL := h.upstream.URL
-	return &model.Channel{Type: channelType, Key: key, Status: common.ChannelStatusEnabled, Name: "relay", Models: relayTestModel, Group: "default", BaseURL: &baseURL}
+	return &model.Channel{Type: channelType, Key: key, Status: common.ChannelStatusEnabled, Name: "relay", Models: relayTestModel, Group: common.BaseVIPGroup, BaseURL: &baseURL}
 }
 
 func (h *relayHarness) pluginChannel(pluginKey, key string) *model.Channel {

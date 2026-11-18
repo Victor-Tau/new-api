@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/i18n"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
@@ -193,6 +194,10 @@ func ModelRequestRateLimit() func(c *gin.Context) {
 		// 其余分组共用该用户的全局计数
 		subject := strconv.Itoa(c.GetInt("id"))
 		groupTotalCount, groupSuccessCount, found := setting.GetGroupRateLimit(group)
+		if !found && common.GetContextKeyString(c, constant.ContextKeyTokenGroup) == "" {
+			group = ratio_setting.BaseBillingGroup(group)
+			groupTotalCount, groupSuccessCount, found = setting.GetGroupRateLimit(group)
+		}
 		if found {
 			totalMaxCount = groupTotalCount
 			successMaxCount = groupSuccessCount

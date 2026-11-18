@@ -102,12 +102,14 @@ func TestSearchRedemptionsFiltersAndPaginates(t *testing.T) {
 
 func setupRedeemFixture(t *testing.T, quota int) (userId int, key string) {
 	t.Helper()
-	require.NoError(t, DB.AutoMigrate(&Redemption{}))
+	require.NoError(t, DB.AutoMigrate(&Redemption{}, &GrowthEvent{}, &UserGrowth{}))
 	require.NoError(t, DB.Session(&gorm.Session{AllowGlobalUpdate: true}).Unscoped().Delete(&Redemption{}).Error)
 	t.Cleanup(func() {
 		require.NoError(t, DB.Session(&gorm.Session{AllowGlobalUpdate: true}).Unscoped().Delete(&Redemption{}).Error)
 		DB.Exec("DELETE FROM users")
 		DB.Exec("DELETE FROM logs")
+		DB.Exec("DELETE FROM growth_events")
+		DB.Exec("DELETE FROM user_growth")
 	})
 
 	user := &User{Username: "redeem-user", Password: "password", Status: common.UserStatusEnabled, Quota: 0}
@@ -140,6 +142,14 @@ func TestRedeemCreditsQuotaExactlyOnce(t *testing.T) {
 	require.NoError(t, DB.First(&redemption, "name = ?", "redeem-test").Error)
 	assert.Equal(t, common.RedemptionCodeStatusUsed, redemption.Status)
 	assert.Equal(t, userId, redemption.UsedUserId)
+	growth, err := GetUserGrowth(userId)
+	require.NoError(t, err)
+	events, total, err := GetUserGrowthEvents(userId, growth.WindowStart, 0, 10)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.EqualValues(t, 1, total)
+	assert.Equal(t, growthRedemption, events[0].Source)
+	assert.EqualValues(t, 500, growth.Quota)
 
 	// Redeeming the same code again must fail and must not credit quota.
 	_, err = Redeem(key, userId)

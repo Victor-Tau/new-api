@@ -86,12 +86,11 @@ func formatWaffoAmount(amount float64, currency string) string {
 // getWaffoPayMoney converts the user-facing amount to USD for Waffo payment.
 // Waffo only accepts USD, so this function handles the conversion from different
 // display types (USD/CNY/TOKENS) to the actual USD amount to charge.
-func getWaffoPayMoney(amount float64, group string) float64 {
+func getWaffoPayMoney(amount float64, topupGroupRatio float64) float64 {
 	originalAmount := amount
 	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
 		amount = amount / common.QuotaPerUnit
 	}
-	topupGroupRatio := common.GetTopupGroupRatio(group)
 	if topupGroupRatio == 0 {
 		topupGroupRatio = 1
 	}
@@ -128,13 +127,13 @@ func RequestWaffoAmount(c *gin.Context) {
 		return
 	}
 
-	group, err := model.GetUserGroup(id, true)
+	membership, err := model.GetUserVIPMembership(id)
 	if err != nil {
 		paymentError(c, common.NewMessage("Failed to get the user group"))
 		return
 	}
 
-	payMoney := getWaffoPayMoney(float64(req.Amount), group)
+	payMoney := getWaffoPayMoney(float64(req.Amount), common.GetUserTopupGroupRatio(membership.Group, membership.VIPLevel))
 	if payMoney <= 0.01 {
 		paymentError(c, common.NewMessage("Payment amount is too low"))
 		return
@@ -203,8 +202,12 @@ func RequestWaffoPay(c *gin.Context) {
 	}
 	// resolvedPayMethodType/Name 为空时，Waffo 自动选择支付方式
 
-	group, _ := model.GetUserGroup(id, true)
-	payMoney := getWaffoPayMoney(float64(req.Amount), group)
+	membership, err := model.GetUserVIPMembership(id)
+	if err != nil {
+		paymentError(c, common.NewMessage("Failed to get user group"))
+		return
+	}
+	payMoney := getWaffoPayMoney(float64(req.Amount), common.GetUserTopupGroupRatio(membership.Group, membership.VIPLevel))
 	if payMoney < 0.01 {
 		paymentError(c, common.NewMessage("Payment amount is too low"))
 		return

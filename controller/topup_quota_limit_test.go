@@ -15,6 +15,7 @@ import (
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/stripe/stripe-go/v81"
 	"gorm.io/gorm"
 )
 
@@ -181,23 +182,21 @@ func TestValidateCreditedQuotaRejectsOverflow(t *testing.T) {
 	)
 }
 
-func TestStripeCreditedQuotaIncludesGroupRatio(t *testing.T) {
+func TestStripeVIPDiscountChangesCheckoutPriceAndPreservesCredit(t *testing.T) {
 	oldQuotaPerUnit := common.QuotaPerUnit
-	oldTopupGroupRatio := common.TopupGroupRatio2JSONString()
 	common.QuotaPerUnit = 500000
-	require.NoError(t, common.UpdateTopupGroupRatioByJSONString(`{"vip":2}`))
-	t.Cleanup(func() {
-		common.QuotaPerUnit = oldQuotaPerUnit
-		require.NoError(t, common.UpdateTopupGroupRatioByJSONString(oldTopupGroupRatio))
-	})
+	t.Cleanup(func() { common.QuotaPerUnit = oldQuotaPerUnit })
 
-	_, err := validateCreditedQuota(getStripeCreditedQuota(2147, "vip"))
+	base := &stripe.Price{Product: &stripe.Product{ID: "prod_wallet"}, Currency: "usd", UnitAmount: 500}
+	item, err := stripeMembershipLineItem(base, 4, 0.97)
 	require.NoError(t, err)
-	_, err = validateCreditedQuota(getStripeCreditedQuota(2148, "vip"))
-	require.NoError(t, err)
-	_, err = validateCreditedQuota(getStripeCreditedQuota(int64(common.MaxWalletQuota), "vip"))
+	assert.EqualValues(t, 1940, *item.PriceData.UnitAmount)
+	assert.EqualValues(t, 1, *item.Quantity)
+	assert.Equal(t, "prod_wallet", *item.PriceData.Product)
+	level := 2
+	assert.True(t, decimal.NewFromInt(2000000).Equal(getStripeCreditedQuota(stripeWalletAmount(4, 0.97, &level))))
+	assert.True(t, decimal.NewFromInt(1940000).Equal(getStripeCreditedQuota(stripeWalletAmount(4, 0.97, nil))))
+
+	_, err = validateCreditedQuota(getStripeCreditedQuota(decimal.NewFromInt(common.MaxWalletQuota)))
 	require.Error(t, err)
-
-	require.NoError(t, common.UpdateTopupGroupRatioByJSONString(`{"free":0}`))
-	assert.True(t, decimal.NewFromInt(500000).Equal(getStripeCreditedQuota(1, "free")))
 }

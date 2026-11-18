@@ -47,7 +47,10 @@ func GetStatus(c *gin.Context) {
 
 	legalSetting := system_setting.GetLegalSettings()
 
+	growthWindow, vipTiers := vipStatus()
 	data := gin.H{
+		"growth_window_days":          growthWindow,
+		"vip_tiers":                   vipTiers,
 		"version":                     common.Version,
 		"start_time":                  common.StartTime,
 		"email_verification":          common.EmailVerificationEnabled,

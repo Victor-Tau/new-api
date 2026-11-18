@@ -156,6 +156,10 @@ function parseNestedRatioMap(
   })
 }
 
+function isMembershipRate(group: string) {
+  return /^VIP[0-5]$/i.test(group)
+}
+
 function buildGroupPricingRows(
   groupRatio: string,
   userUsableGroups: string,
@@ -167,23 +171,33 @@ function buildGroupPricingRows(
   const names = new Set([
     ...Object.keys(ratioMap),
     ...Object.keys(usableMap),
-    ...Object.keys(topupMap),
+    ...Object.keys(topupMap).filter((group) => !isMembershipRate(group)),
   ])
 
   return [...names].map((name) => ({
     _id: createGroupPricingId(),
     name,
     ratio: String(normalizeRatio(ratioMap[name])),
-    topupRatio: Object.hasOwn(topupMap, name) ? String(topupMap[name]) : '',
+    topupRatio:
+      !isMembershipRate(name) && Object.hasOwn(topupMap, name)
+        ? String(topupMap[name])
+        : '',
     selectable: Object.hasOwn(usableMap, name),
     description: String(usableMap[name] ?? ''),
   }))
 }
 
-function serializeGroupPricingRows(rows: GroupPricingRow[]) {
+function serializeGroupPricingRows(
+  rows: GroupPricingRow[],
+  savedTopupRatios = '{}'
+) {
   const groupRatio: Record<string, number> = {}
   const userUsableGroups: Record<string, string> = {}
-  const topupGroupRatio: Record<string, number> = {}
+  const topupGroupRatio = Object.fromEntries(
+    Object.entries(parseRatioMap(savedTopupRatios)).filter(([group]) =>
+      isMembershipRate(group)
+    )
+  )
 
   for (const row of rows) {
     const name = row.name.trim()
@@ -193,7 +207,11 @@ function serializeGroupPricingRows(rows: GroupPricingRow[]) {
       userUsableGroups[name] = row.description
     }
     const topup = row.topupRatio.trim()
-    if (topup !== '' && Number.isFinite(Number(topup))) {
+    if (
+      !isMembershipRate(name) &&
+      topup !== '' &&
+      Number.isFinite(Number(topup))
+    ) {
       topupGroupRatio[name] = Number(topup)
     }
   }
@@ -222,7 +240,11 @@ function sourceGroupPricingSignature(
   return JSON.stringify({
     groupRatio: parseRatioMap(groupRatio),
     userUsableGroups: parseUsableMap(userUsableGroups),
-    topupGroupRatio: parseRatioMap(topupGroupRatio),
+    topupGroupRatio: Object.fromEntries(
+      Object.entries(parseRatioMap(topupGroupRatio)).filter(
+        ([group]) => !isMembershipRate(group)
+      )
+    ),
   })
 }
 
@@ -290,7 +312,7 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
     const names = new Set([
       ...Object.keys(ratioMap),
       ...Object.keys(usableMap),
-      ...Object.keys(topupMap),
+      ...Object.keys(topupMap).filter((group) => !isMembershipRate(group)),
     ])
     return [...names].map((name) => ({
       name,
@@ -513,12 +535,12 @@ function GroupPricingTable({
   const emitRows = useCallback(
     (nextRows: GroupPricingRow[]) => {
       setRows(nextRows)
-      const serialized = serializeGroupPricingRows(nextRows)
+      const serialized = serializeGroupPricingRows(nextRows, topupGroupRatio)
       onChange('GroupRatio', serialized.GroupRatio)
       onChange('UserUsableGroups', serialized.UserUsableGroups)
       onChange('TopupGroupRatio', serialized.TopupGroupRatio)
     },
-    [onChange]
+    [onChange, topupGroupRatio]
   )
 
   const updateRow = useCallback(
@@ -689,19 +711,24 @@ function GroupPricingTable({
                 id: 'topup-ratio',
                 header: t('Top-up ratio'),
                 className: 'w-28',
-                cell: (row) => (
-                  <Input
-                    type='number'
-                    min={0}
-                    step={0.0001}
-                    value={row.topupRatio}
-                    aria-label={t('Top-up ratio')}
-                    placeholder={t('Not set')}
-                    onChange={(event) =>
-                      updateRow(row._id, 'topupRatio', event.target.value)
-                    }
-                  />
-                ),
+                cell: (row) =>
+                  isMembershipRate(row.name.trim()) ? (
+                    <span className='text-muted-foreground text-sm'>
+                      {t('VIP Management')}
+                    </span>
+                  ) : (
+                    <Input
+                      type='number'
+                      min={0}
+                      step={0.0001}
+                      value={row.topupRatio}
+                      aria-label={t('Top-up ratio')}
+                      placeholder={t('Not set')}
+                      onChange={(event) =>
+                        updateRow(row._id, 'topupRatio', event.target.value)
+                      }
+                    />
+                  ),
               },
               {
                 id: 'selectable',

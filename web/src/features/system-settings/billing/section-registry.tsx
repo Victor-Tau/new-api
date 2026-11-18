@@ -25,6 +25,7 @@ import { PaymentSettingsSection } from '../integrations/payment-settings-section
 import { RatioSettingsCard } from '../models/ratio-settings-card'
 import type { BillingSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
+import { VipManagementSection } from './vip-management-section'
 
 const getModelDefaults = (settings: BillingSettings) => ({
   ModelPrice: settings.ModelPrice,
@@ -126,6 +127,13 @@ const BILLING_SECTIONS = [
         toolPricesDefault={settings['tool_price_setting.prices']}
         visibleTabs={['groups']}
       />
+    ),
+  },
+  {
+    id: 'vip',
+    titleKey: 'VIP Management',
+    build: (settings: BillingSettings) => (
+      <VipManagementSection settings={settings} />
     ),
   },
   {

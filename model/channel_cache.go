@@ -64,12 +64,12 @@ func InitChannelCache() {
 		}
 		groups := strings.SplitSeq(channel.Group, ",")
 		for group := range groups {
-			models := channel.GetModels()
-			for _, model := range models {
-				if _, ok := newGroup2model2channels[group][model]; !ok {
-					newGroup2model2channels[group][model] = make([]int, 0)
-				}
-				newGroup2model2channels[group][model] = append(newGroup2model2channels[group][model], channel.Id)
+			groupModels := newGroup2model2channels[group]
+			if groupModels == nil {
+				continue
+			}
+			for _, model := range channel.GetModels() {
+				groupModels[model] = append(groupModels[model], channel.Id)
 			}
 		}
 	}

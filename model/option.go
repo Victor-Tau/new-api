@@ -129,6 +129,10 @@ func InitOptionMap() {
 	common.OptionMap["WaffoPancakeStoreID"] = setting.WaffoPancakeStoreID
 	common.OptionMap["WaffoPancakeProductID"] = setting.WaffoPancakeProductID
 	common.OptionMap["TopupGroupRatio"] = common.TopupGroupRatio2JSONString()
+	vipJSON, _ := common.Marshal(CurrentVIPSettings())
+	emailGroupJSON, _ := common.Marshal(emailGroupSettings.Load())
+	common.OptionMap[vipTierOption] = string(vipJSON)
+	common.OptionMap[emailGroupOption] = string(emailGroupJSON)
 	common.OptionMap["Chats"] = setting.Chats2JsonString()
 	common.OptionMap["AutoGroups"] = setting.AutoGroups2JsonString()
 	common.OptionMap["DefaultUseAutoGroup"] = strconv.FormatBool(setting.DefaultUseAutoGroup)
@@ -237,6 +241,20 @@ func SyncOptions(frequency int) {
 }
 
 func validateOptionValue(key string, value string) error {
+	switch key {
+	case vipTierOption:
+		_, err := parseVIPSettings(value)
+		return err
+	case emailGroupOption:
+		_, err := parseEmailGroupSettings(value, true)
+		return err
+	case topupRatioOption:
+		_, err := common.ParseTopupGroupRatios(value)
+		return err
+	}
+	if key == vipLevelBackfillKey || key == growthBackfillKey {
+		return common.NewMessage("Migration status is read-only")
+	}
 	if key == legacyAccessTokenRetireAtKey {
 		return errLegacyRetireAtReadOnly
 	}
@@ -286,6 +304,9 @@ func validateOptionValue(key string, value string) error {
 }
 
 func UpdateOption(key string, value string) error {
+	if key == vipTierOption || key == emailGroupOption || key == topupRatioOption {
+		return UpdateOptionsBulk(map[string]string{key: value})
+	}
 	if IsRequestPolicyOption(key) {
 		return UpdateRequestPolicyOptions(map[string]string{key: value})
 	}
@@ -384,6 +405,9 @@ func UpdateOptionsBulk(values map[string]string) error {
 }
 
 func updateOptionMap(key string, value string) (err error) {
+	if key == vipLevelBackfillKey || key == growthBackfillKey {
+		return nil
+	}
 	if key == retiredThemeOptionKey || key == legacyAccessTokenRetireAtKey {
 		common.OptionMapRWMutex.Lock()
 		delete(common.OptionMap, key)
@@ -392,6 +416,25 @@ func updateOptionMap(key string, value string) (err error) {
 	}
 	common.OptionMapRWMutex.Lock()
 	defer common.OptionMapRWMutex.Unlock()
+	switch key {
+	case vipTierOption:
+		settings, err := parseVIPSettings(value)
+		if err != nil {
+			return err
+		}
+		vipSettings.Store(&settings)
+	case emailGroupOption:
+		settings, err := parseEmailGroupSettings(value, false)
+		if err != nil {
+			return err
+		}
+		emailGroupSettings.Store(&settings)
+	case topupRatioOption:
+		if err := common.UpdateTopupGroupRatioByJSONString(value); err != nil {
+			return err
+		}
+		value = common.TopupGroupRatio2JSONString()
+	}
 	common.OptionMap[key] = value
 
 	// 检查是否是模型配置 - 使用更规范的方式处理
@@ -610,8 +653,6 @@ func updateOptionMap(key string, value string) (err error) {
 		setting.WaffoPancakeUnitPrice, _ = strconv.ParseFloat(value, 64)
 	case "WaffoPancakeMinTopUp":
 		setting.WaffoPancakeMinTopUp, _ = strconv.Atoi(value)
-	case "TopupGroupRatio":
-		err = common.UpdateTopupGroupRatioByJSONString(value)
 	case "GitHubClientId":
 		common.GitHubClientId = value
 	case "GitHubClientSecret":

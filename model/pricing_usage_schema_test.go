@@ -85,6 +85,7 @@ func TestPricingAliasCarriesPluginUsageSchemaAndTailExpr(t *testing.T) {
 		Key:          "key-910",
 		Status:       1,
 		Name:         "channel-910",
+		Group:        "default",
 		Models:       "alias-model,pricing-usage-model",
 		ModelMapping: &mapping,
 	}

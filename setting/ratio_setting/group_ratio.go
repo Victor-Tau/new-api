@@ -10,9 +10,9 @@ import (
 )
 
 var defaultGroupRatio = map[string]float64{
-	"default": 1,
-	"vip":     1,
-	"svip":    1,
+	common.BaseVIPGroup: 1,
+	"vip":               1,
+	"svip":              1,
 }
 
 var groupRatioMap = types.NewRWMap[string, float64]()
@@ -85,16 +85,41 @@ func GetGroupRatio(name string) float64 {
 	return ratio
 }
 
+// BaseBillingGroup resolves the membership-independent group.
+func BaseBillingGroup(userGroup string) string {
+	_, special, ok := common.SplitUserGroup(userGroup)
+	if !ok {
+		return userGroup
+	}
+	if special != "" {
+		return special
+	}
+	return common.BaseVIPGroup
+}
+
+// BillingGroup preserves explicitly configured channel/model billing groups.
+func BillingGroup(userGroup string) string {
+	if ContainsGroupRatio(userGroup) {
+		return userGroup
+	}
+	return BaseBillingGroup(userGroup)
+}
+
 func GetGroupGroupRatio(userGroup, usingGroup string) (float64, bool) {
-	gp, ok := groupGroupRatioMap.Get(userGroup)
-	if !ok {
-		return -1, false
+	if ratios, ok := groupGroupRatioMap.Get(userGroup); ok {
+		if ratio, ok := ratios[usingGroup]; ok {
+			return ratio, true
+		}
 	}
-	ratio, ok := gp[usingGroup]
-	if !ok {
-		return -1, false
+	base := BaseBillingGroup(userGroup)
+	if base != userGroup {
+		if ratios, ok := groupGroupRatioMap.Get(base); ok {
+			if ratio, ok := ratios[usingGroup]; ok {
+				return ratio, true
+			}
+		}
 	}
-	return ratio, true
+	return -1, false
 }
 
 func GroupGroupRatio2JSONString() string {

@@ -354,6 +354,8 @@ func migrateDB() error {
 		&Log{},
 		&Midjourney{},
 		&TopUp{},
+		&GrowthEvent{},
+		&UserGrowth{},
 		&QuotaData{},
 		&Task{},
 		&TaskPlugin{},
@@ -378,6 +380,9 @@ func migrateDB() error {
 		&UserAccessToken{},
 	)
 	if err != nil {
+		return err
+	}
+	if err := migrateUserVIPLevels(); err != nil {
 		return err
 	}
 	if err := InitializeUserAuthVersions(); err != nil {

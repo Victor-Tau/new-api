@@ -724,3 +724,54 @@ func TestUpdateUserSettingKeepsWhatTheRequestLeavesOut(t *testing.T) {
 		})
 	}
 }
+
+func TestSelfPebbleSaveAndResetPreservesSettings(t *testing.T) {
+	db := setupManageUserTestDB(t)
+	user := model.User{
+		Username: "pebble-test", AffCode: "pebble-test",
+		Setting: `{"language":"zh","sidebar_modules":"saved","external_setting":123}`,
+	}
+	require.NoError(t, db.Create(&user).Error)
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) { c.Set("id", user.Id); c.Set("role", common.RoleCommonUser) })
+	router.GET("/api/user/self", GetSelf)
+	router.PUT("/api/user/self", UpdateSelf)
+
+	request := func(method, body string) map[string]any {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(method, "/api/user/self", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(recorder, req)
+		var response map[string]any
+		require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+		return response
+	}
+	data := func() map[string]any {
+		result := request(http.MethodGet, "")
+		require.Equal(t, true, result["success"])
+		return result["data"].(map[string]any)
+	}
+	assert.Nil(t, data()["pebble"])
+	assert.Equal(t, float64(0), data()["vip_level"])
+
+	saved := request(http.MethodPut, `{"pebble":{"trait":2,"eyes":0,"palette":15,"blush":true}}`)
+	require.Equal(t, true, saved["success"], saved)
+	avatar := data()["pebble"]
+	assert.Equal(t, map[string]any{"trait": float64(2), "eyes": float64(0), "palette": float64(15), "blush": true}, avatar)
+
+	for _, body := range []string{`{"pebble":{"trait":-1}}`, `{"pebble":{"palette":16}}`, `{"pebble":{"eyes":"2"}}`, `{"pebble":true}`} {
+		assert.Equal(t, false, request(http.MethodPut, body)["success"], body)
+		assert.Equal(t, avatar, data()["pebble"])
+	}
+	require.Equal(t, true, request(http.MethodPut, `{"language":"en"}`)["success"])
+	assert.Equal(t, avatar, data()["pebble"])
+	require.Equal(t, true, request(http.MethodPut, `{"pebble":null}`)["success"])
+	assert.Nil(t, data()["pebble"])
+	var stored map[string]any
+	require.NoError(t, db.First(&user, user.Id).Error)
+	require.NoError(t, common.UnmarshalJsonStr(user.Setting, &stored))
+	assert.Equal(t, "en", stored["language"])
+	assert.Equal(t, "saved", stored["sidebar_modules"])
+	assert.Equal(t, float64(123), stored["external_setting"])
+}

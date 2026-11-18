@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/shopspring/decimal"
 	"github.com/stripe/stripe-go/v81"
 	"github.com/stripe/stripe-go/v81/checkout/session"
+	"github.com/stripe/stripe-go/v81/price"
 	"github.com/stripe/stripe-go/v81/webhook"
 	"github.com/thanhpk/randstr"
 )
@@ -53,15 +55,16 @@ func (*StripeAdaptor) RequestAmount(c *gin.Context, req *StripePayRequest) {
 		return
 	}
 	id := c.GetInt("id")
-	group, err := model.GetUserGroup(id, true)
+	membership, err := model.GetUserVIPMembership(id)
 	if err != nil {
 		paymentError(c, common.NewMessage("Failed to get the user group"))
 		return
 	}
-	if rejectInvalidCreditedQuota(c, id, getStripeCreditedQuota(req.Amount, group)) {
+	ratio := common.GetUserTopupGroupRatio(membership.Group, membership.VIPLevel)
+	if rejectInvalidCreditedQuota(c, id, getStripeCreditedQuota(stripeWalletAmount(req.Amount, ratio, membership.VIPLevel))) {
 		return
 	}
-	payMoney := getStripePayMoney(float64(req.Amount), group)
+	payMoney := getStripePayMoney(float64(req.Amount), ratio)
 	if payMoney <= 0.01 {
 		paymentError(c, common.NewMessage("Payment amount is too low"))
 		return
@@ -99,17 +102,20 @@ func (*StripeAdaptor) RequestPay(c *gin.Context, req *StripePayRequest) {
 		paymentError(c, common.NewMessage("User does not exist"))
 		return
 	}
-	chargedMoney := GetChargedAmount(float64(req.Amount), *user)
-	if rejectInvalidCreditedQuota(c, id,
-		decimal.NewFromFloat(chargedMoney).Mul(decimal.NewFromFloat(common.QuotaPerUnit)),
-	) {
+	ratio := common.GetUserTopupGroupRatio(user.Group, user.VIPLevel)
+	walletAmount := stripeWalletAmount(req.Amount, ratio, user.VIPLevel)
+	if rejectInvalidCreditedQuota(c, id, getStripeCreditedQuota(walletAmount)) {
 		return
 	}
 
 	reference := fmt.Sprintf("new-api-ref-%d-%d-%s", user.Id, time.Now().UnixMilli(), randstr.String(4))
 	referenceId := "ref_" + common.Sha1([]byte(reference))
 
-	payLink, err := genStripeLink(referenceId, user.StripeCustomer, user.Email, req.Amount, req.SuccessURL, req.CancelURL)
+	checkoutRatio := ratio
+	if user.VIPLevel == nil {
+		checkoutRatio = 1
+	}
+	payLink, err := genStripeLink(referenceId, user.StripeCustomer, user.Email, req.Amount, checkoutRatio, req.SuccessURL, req.CancelURL)
 	if err != nil {
 		logger.LogError(c.Request.Context(), common.LogText("Stripe failed to create Checkout Session user_id=%d trade_no=%s amount=%d error=%q", id, referenceId, req.Amount, err.Error()))
 		paymentError(c, common.NewMessage("Failed to start payment"))
@@ -119,7 +125,7 @@ func (*StripeAdaptor) RequestPay(c *gin.Context, req *StripePayRequest) {
 	topUp := &model.TopUp{
 		UserId:          id,
 		Amount:          req.Amount,
-		Money:           chargedMoney,
+		Money:           walletAmount.InexactFloat64(), // Stripe orders store the credited amount in Money.
 		TradeNo:         referenceId,
 		PaymentMethod:   model.PaymentMethodStripe,
 		PaymentProvider: model.PaymentProviderStripe,
@@ -132,7 +138,7 @@ func (*StripeAdaptor) RequestPay(c *gin.Context, req *StripePayRequest) {
 		paymentError(c, common.NewMessage("Failed to create order"))
 		return
 	}
-	logger.LogInfo(c.Request.Context(), common.LogText("Stripe top-up order created user_id=%d trade_no=%s amount=%d money=%.2f", id, referenceId, req.Amount, chargedMoney))
+	logger.LogInfo(c.Request.Context(), common.LogText("Stripe top-up order created user_id=%d trade_no=%s amount=%d money=%.2f", id, referenceId, req.Amount, getStripePayMoney(float64(req.Amount), ratio)))
 	c.JSON(http.StatusOK, gin.H{
 		"message": "success",
 		"data": gin.H{
@@ -355,7 +361,7 @@ func sessionExpired(ctx context.Context, event stripe.Event) {
 //   - cancelURL: custom URL to redirect when payment is canceled (empty for default)
 //
 // Returns the checkout session URL or an error if the session creation fails.
-func genStripeLink(referenceId string, customerId string, email string, amount int64, successURL string, cancelURL string) (string, error) {
+func genStripeLink(referenceId string, customerId string, email string, amount int64, ratio float64, successURL string, cancelURL string) (string, error) {
 	if !strings.HasPrefix(setting.StripeApiSecret, "sk_") && !strings.HasPrefix(setting.StripeApiSecret, "rk_") {
 		return "", errors.New("invalid Stripe API key")
 	}
@@ -370,16 +376,26 @@ func genStripeLink(referenceId string, customerId string, email string, amount i
 		cancelURL = paymentReturnPath("/wallet")
 	}
 
+	item := &stripe.CheckoutSessionLineItemParams{
+		Price:    stripe.String(setting.StripePriceId),
+		Quantity: stripe.Int64(amount),
+	}
+	if ratio != 1 {
+		configuredPrice, err := price.Get(setting.StripePriceId, nil)
+		if err != nil {
+			return "", err
+		}
+		item, err = stripeMembershipLineItem(configuredPrice, amount, ratio)
+		if err != nil {
+			return "", err
+		}
+	}
+
 	params := &stripe.CheckoutSessionParams{
-		ClientReferenceID: stripe.String(referenceId),
-		SuccessURL:        stripe.String(successURL),
-		CancelURL:         stripe.String(cancelURL),
-		LineItems: []*stripe.CheckoutSessionLineItemParams{
-			{
-				Price:    stripe.String(setting.StripePriceId),
-				Quantity: stripe.Int64(amount),
-			},
-		},
+		ClientReferenceID:   stripe.String(referenceId),
+		SuccessURL:          stripe.String(successURL),
+		CancelURL:           stripe.String(cancelURL),
+		LineItems:           []*stripe.CheckoutSessionLineItemParams{item},
 		Mode:                stripe.String(string(stripe.CheckoutSessionModePayment)),
 		AllowPromotionCodes: stripe.Bool(setting.StripePromotionCodesEnabled),
 	}
@@ -402,32 +418,52 @@ func genStripeLink(referenceId string, customerId string, email string, amount i
 	return result.URL, nil
 }
 
-func GetChargedAmount(count float64, user model.User) float64 {
-	topUpGroupRatio := common.GetTopupGroupRatio(user.Group)
-	if topUpGroupRatio == 0 {
-		topUpGroupRatio = 1
+// Use the configured Stripe price's currency, product and tax behavior.
+func stripeMembershipLineItem(base *stripe.Price, quantity int64, ratio float64) (*stripe.CheckoutSessionLineItemParams, error) {
+	if base.Product == nil || base.Currency == "" || base.Recurring != nil || base.TransformQuantity != nil {
+		return nil, errors.New("Stripe VIP pricing requires a fixed one-time price")
 	}
-
-	return count * topUpGroupRatio
+	unit := decimal.NewFromInt(base.UnitAmount)
+	if base.UnitAmountDecimal > 0 {
+		unit = decimal.NewFromFloat(base.UnitAmountDecimal)
+	}
+	total := unit.Mul(decimal.NewFromInt(quantity)).Mul(decimal.NewFromFloat(ratio)).Round(0)
+	if !total.IsPositive() || total.GreaterThan(decimal.NewFromInt(math.MaxInt64)) {
+		return nil, errors.New("invalid Stripe VIP checkout amount")
+	}
+	data := &stripe.CheckoutSessionLineItemPriceDataParams{
+		Currency:   stripe.String(string(base.Currency)),
+		Product:    stripe.String(base.Product.ID),
+		UnitAmount: stripe.Int64(total.IntPart()),
+	}
+	if base.TaxBehavior != "" {
+		data.TaxBehavior = stripe.String(string(base.TaxBehavior))
+	}
+	return &stripe.CheckoutSessionLineItemParams{
+		Quantity:  stripe.Int64(1),
+		PriceData: data,
+	}, nil
 }
 
-func getStripeCreditedQuota(amount int64, group string) decimal.Decimal {
-	topUpGroupRatio := common.GetTopupGroupRatio(group)
-	if topUpGroupRatio == 0 {
-		topUpGroupRatio = 1
+func stripeWalletAmount(amount int64, ratio float64, level *int) decimal.Decimal {
+	units := decimal.NewFromInt(amount)
+	if level == nil {
+		// Custom groups retain their legacy wallet multipliers.
+		units = units.Mul(decimal.NewFromFloat(ratio))
 	}
-	return decimal.NewFromInt(amount).
-		Mul(decimal.NewFromFloat(topUpGroupRatio)).
-		Mul(decimal.NewFromFloat(common.QuotaPerUnit))
+	return units
 }
 
-func getStripePayMoney(amount float64, group string) float64 {
+func getStripeCreditedQuota(walletAmount decimal.Decimal) decimal.Decimal {
+	return walletAmount.Mul(decimal.NewFromFloat(common.QuotaPerUnit))
+}
+
+func getStripePayMoney(amount float64, topupGroupRatio float64) float64 {
 	originalAmount := amount
 	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
 		amount = amount / common.QuotaPerUnit
 	}
 	// Using float64 for monetary calculations is acceptable here due to the small amounts involved
-	topupGroupRatio := common.GetTopupGroupRatio(group)
 	if topupGroupRatio == 0 {
 		topupGroupRatio = 1
 	}

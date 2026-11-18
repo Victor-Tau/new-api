@@ -156,7 +156,7 @@ func GetEpayClient() *epay.Client {
 	return withUrl
 }
 
-func getPayMoney(amount int64, group string) float64 {
+func getPayMoney(amount int64, topupGroupRatio float64) float64 {
 	dAmount := decimal.NewFromInt(amount)
 	// 充值金额以“展示类型”为准：
 	// - USD/CNY: 前端传 amount 为金额单位；TOKENS: 前端传 tokens，需要换成 USD 金额
@@ -165,7 +165,6 @@ func getPayMoney(amount int64, group string) float64 {
 		dAmount = dAmount.Div(dQuotaPerUnit)
 	}
 
-	topupGroupRatio := common.GetTopupGroupRatio(group)
 	if topupGroupRatio == 0 {
 		topupGroupRatio = 1
 	}
@@ -304,12 +303,12 @@ func RequestEpay(c *gin.Context) {
 		return
 	}
 
-	group, err := model.GetUserGroup(id, true)
+	membership, err := model.GetUserVIPMembership(id)
 	if err != nil {
 		paymentError(c, common.NewMessage("Failed to get the user group"))
 		return
 	}
-	payMoney := getPayMoney(req.Amount, group)
+	payMoney := getPayMoney(req.Amount, common.GetUserTopupGroupRatio(membership.Group, membership.VIPLevel))
 	if payMoney < 0.01 {
 		paymentError(c, common.NewMessage("Payment amount is too low"))
 		return
@@ -520,12 +519,12 @@ func RequestAmount(c *gin.Context) {
 	if rejectInvalidTopUpQuota(c, id, req.Amount) {
 		return
 	}
-	group, err := model.GetUserGroup(id, true)
+	membership, err := model.GetUserVIPMembership(id)
 	if err != nil {
 		paymentError(c, common.NewMessage("Failed to get the user group"))
 		return
 	}
-	payMoney := getPayMoney(req.Amount, group)
+	payMoney := getPayMoney(req.Amount, common.GetUserTopupGroupRatio(membership.Group, membership.VIPLevel))
 	if payMoney <= 0.01 {
 		paymentError(c, common.NewMessage("Payment amount is too low"))
 		return

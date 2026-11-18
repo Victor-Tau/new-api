@@ -14,7 +14,12 @@ import (
 func GetUserUsableGroups(userGroup string) map[string]string {
 	groupsCopy := setting.GetUserUsableGroupsCopy()
 	if userGroup != "" {
-		specialSettings, b := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup.Get(userGroup)
+		specialGroups := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup
+		specialSettings, b := specialGroups.Get(userGroup)
+		if !b {
+			specialSettings, b = specialGroups.Get(ratio_setting.BaseBillingGroup(userGroup))
+		}
+		userGroup = ratio_setting.BillingGroup(userGroup)
 		if b {
 			// 处理特殊可用分组
 			for specialGroup, desc := range specialSettings {

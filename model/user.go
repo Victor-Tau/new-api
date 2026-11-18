@@ -97,7 +97,8 @@ type User struct {
 	Quota                int                        `json:"quota" gorm:"type:int;default:0"`
 	UsedQuota            int                        `json:"used_quota" gorm:"type:int;default:0;column:used_quota"` // used quota
 	RequestCount         int                        `json:"request_count" gorm:"type:int;default:0;"`               // request number
-	Group                string                     `json:"group" gorm:"type:varchar(64);default:'default'"`
+	Group                string                     `json:"group" gorm:"type:varchar(64);default:'VIP0'"`
+	VIPLevel             *int                       `json:"vip_level" gorm:"column:vip_level;index"`
 	AffCode              string                     `json:"aff_code" gorm:"type:varchar(32);column:aff_code;uniqueIndex"`
 	AffCount             int                        `json:"aff_count" gorm:"type:int;default:0;column:aff_count"`
 	AffQuota             int                        `json:"aff_quota" gorm:"type:int;default:0;column:aff_quota"`           // 邀请剩余额度
@@ -112,6 +113,14 @@ type User struct {
 	LastLoginAt          int64                      `json:"last_login_at" gorm:"default:0;column:last_login_at"`
 	AuthVersion          int64                      `json:"-" gorm:"type:bigint;not null;default:1;column:auth_version"`
 	AdminPermissions     map[string]map[string]bool `json:"admin_permissions,omitempty" gorm:"-:all"`
+}
+
+func (user *User) BeforeCreate(_ *gorm.DB) error {
+	if user.Group == "" {
+		user.Group = common.BaseVIPGroup
+	}
+	user.VIPLevel = common.VIPLevelForGroup(user.Group)
+	return nil
 }
 
 func (user *User) ToBaseUser() *UserBase {
@@ -531,7 +540,7 @@ func GetSelfUserById(id int) (*User, error) {
 	err := DB.Model(&User{}).Select([]string{
 		"id", "username", "display_name", "role", "status", "email",
 		"github_id", "discord_id", "oidc_id", "wechat_id", "telegram_id",
-		"group", "quota", "used_quota", "request_count", "aff_code", "aff_count",
+		"group", "vip_level", "quota", "used_quota", "request_count", "aff_code", "aff_count",
 		"aff_quota", "aff_history", "inviter_id", "linux_do_id", "setting",
 		"stripe_customer", "auth_version", "created_at",
 		"CASE WHEN password <> '' THEN 1 ELSE 0 END AS has_password",
@@ -644,10 +653,12 @@ func BindEmailToUser(user *User, email string) error {
 			if err := ensureEmailAvailableWithTx(tx, email, user.Id); err != nil {
 				return err
 			}
-			user.Email = email
-			return user.UpdateWithTx(tx, false)
+			return tx.Model(&User{}).Where("id = ?", user.Id).Update("email", email).Error
 		})
 	}); err != nil {
+		return err
+	}
+	if err := DB.First(user, user.Id).Error; err != nil {
 		return err
 	}
 	return updateUserCache(*user)
@@ -706,10 +717,11 @@ func (user *User) finishInsert(inviterId int) {
 		// 生成基于角色的默认边栏配置
 		defaultSidebarConfig := generateDefaultSidebarConfigForRole(createdUser.Role)
 		if defaultSidebarConfig != "" {
-			currentSetting := createdUser.GetSetting()
-			currentSetting.SidebarModules = defaultSidebarConfig
-			createdUser.SetSetting(currentSetting)
-			createdUser.Update(false)
+			if err := ModifyUserSetting(createdUser.Id, func(setting *dto.UserSetting) {
+				setting.SidebarModules = defaultSidebarConfig
+			}); err != nil {
+				common.SysError(common.LogText("initialize sidebar for user %d: %v", createdUser.Id, err))
+			}
 			common.SysLog(common.LogText("initialized the sidebar config for new user %s (role: %d)", createdUser.Username, createdUser.Role))
 		}
 	}
@@ -763,10 +775,11 @@ func (user *User) FinalizeOAuthUserCreation(inviterId int) {
 	if err := DB.Where("id = ?", user.Id).First(&createdUser).Error; err == nil {
 		defaultSidebarConfig := generateDefaultSidebarConfigForRole(createdUser.Role)
 		if defaultSidebarConfig != "" {
-			currentSetting := createdUser.GetSetting()
-			currentSetting.SidebarModules = defaultSidebarConfig
-			createdUser.SetSetting(currentSetting)
-			createdUser.Update(false)
+			if err := ModifyUserSetting(createdUser.Id, func(setting *dto.UserSetting) {
+				setting.SidebarModules = defaultSidebarConfig
+			}); err != nil {
+				common.SysError(common.LogText("initialize sidebar for user %d: %v", createdUser.Id, err))
+			}
 			common.SysLog(common.LogText("initialized the sidebar config for new user %s (role: %d)", createdUser.Username, createdUser.Role))
 		}
 	}
@@ -816,7 +829,7 @@ func (user *User) UpdateWithTx(tx *gorm.DB, updatePassword bool) error {
 	}
 	newUser := *user
 	current := User{}
-	if err = tx.First(&current, user.Id).Error; err != nil {
+	if err = lockForUpdate(tx).First(&current, user.Id).Error; err != nil {
 		return err
 	}
 	// Updates(struct) ignores zero values. Match that behavior when deciding
@@ -832,8 +845,20 @@ func (user *User) UpdateWithTx(tx *gorm.DB, updatePassword bool) error {
 			return err
 		}
 	}
+	if newUser.Group != "" && newUser.Group != current.Group {
+		updates, err := manualUserGroupColumns(current, newUser.Group)
+		if err != nil {
+			return err
+		}
+		if err := tx.Model(&current).Updates(updates).Error; err != nil {
+			return err
+		}
+	}
 	if err = tx.Model(&current).Omit(
 		"access_token",
+		"group",
+		"vip_level",
+		"setting",
 		"quota",
 		"used_quota",
 		"request_count",
@@ -877,19 +902,19 @@ func (user *User) EditWithTx(tx *gorm.DB, updatePassword bool) error {
 	}
 
 	newUser := *user
-	updates := map[string]any{
-		"username":     newUser.Username,
-		"display_name": newUser.DisplayName,
-		"group":        newUser.Group,
-		"remark":       newUser.Remark,
+	current := User{}
+	if err = lockForUpdate(tx).First(&current, user.Id).Error; err != nil {
+		return err
 	}
+	updates, err := manualUserGroupColumns(current, newUser.Group)
+	if err != nil {
+		return err
+	}
+	updates["username"] = newUser.Username
+	updates["display_name"] = newUser.DisplayName
+	updates["remark"] = newUser.Remark
 	if updatePassword {
 		updates["password"] = newUser.Password
-	}
-
-	current := User{}
-	if err = tx.First(&current, user.Id).Error; err != nil {
-		return err
 	}
 	authChanged := (updatePassword && current.Password != newUser.Password) || current.Group != newUser.Group
 	if authChanged {
@@ -924,8 +949,14 @@ func (user *User) ClearBinding(bindingType string) error {
 		return errors.New("invalid binding type")
 	}
 
+	var emailChange emailGroupChange
 	if err := DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Model(&User{}).Where("id = ?", user.Id).Update(column, "").Error; err != nil {
+			return err
+		}
+		if bindingType == "email" {
+			var err error
+			emailChange, err = changeEmailGroup(tx, user.Id, "", false)
 			return err
 		}
 		if bindingType == ExternalIdentityProviderTelegram {
@@ -935,6 +966,8 @@ func (user *User) ClearBinding(bindingType string) error {
 	}); err != nil {
 		return err
 	}
+
+	publishEmailGroupChange(user.Id, emailChange)
 
 	if err := DB.Where("id = ?", user.Id).First(user).Error; err != nil {
 		return err

@@ -410,6 +410,12 @@ func InitResources() error {
 		service.SyncTopicLoadFailed(model.SyncTopicOAuthProviders, err)
 	}
 
+	if common.IsMasterNode {
+		if err := model.InitializeUserGrowth(); err != nil {
+			return err
+		}
+	}
+	service.StartUserGrowthMaintenance()
 	service.StartAuthArtifactCleanup()
 
 	return nil

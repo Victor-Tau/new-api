@@ -235,7 +235,7 @@ export function parseModelsList(models: string): string[] {
 
 /**
  * Parse comma-separated groups list.
- * Sorts with 'default' group first, then locale-sorted alphabetically.
+ * Sorts with 'VIP0' group first, then locale-sorted alphabetically.
  */
 export function parseGroupsList(groups: string): string[] {
   if (!groups) {
@@ -246,10 +246,10 @@ export function parseGroupsList(groups: string): string[] {
     .map((g) => g.trim())
     .filter((g) => g.length > 0)
   return list.sort((a, b) => {
-    if (a === 'default') {
+    if (a === 'VIP0') {
       return -1
     }
-    if (b === 'default') {
+    if (b === 'VIP0') {
       return 1
     }
     return a.localeCompare(b)

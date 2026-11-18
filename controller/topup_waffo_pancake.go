@@ -38,13 +38,13 @@ func RequestWaffoPancakeAmount(c *gin.Context) {
 		return
 	}
 
-	group, err := model.GetUserGroup(id, true)
+	membership, err := model.GetUserVIPMembership(id)
 	if err != nil {
 		paymentError(c, common.NewMessage("Failed to get the user group"))
 		return
 	}
 
-	payMoney := getWaffoPancakePayMoney(req.Amount, group)
+	payMoney := getWaffoPancakePayMoney(req.Amount, common.GetUserTopupGroupRatio(membership.Group, membership.VIPLevel))
 	if payMoney <= 0.01 {
 		paymentError(c, common.NewMessage("Payment amount is too low"))
 		return
@@ -53,13 +53,12 @@ func RequestWaffoPancakeAmount(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "success", "data": fmt.Sprintf("%.2f", payMoney)})
 }
 
-func getWaffoPancakePayMoney(amount int64, group string) float64 {
+func getWaffoPancakePayMoney(amount int64, topupGroupRatio float64) float64 {
 	dAmount := decimal.NewFromInt(amount)
 	if operation_setting.GetQuotaDisplayType() == operation_setting.QuotaDisplayTypeTokens {
 		dAmount = dAmount.Div(decimal.NewFromFloat(common.QuotaPerUnit))
 	}
 
-	topupGroupRatio := common.GetTopupGroupRatio(group)
 	if topupGroupRatio == 0 {
 		topupGroupRatio = 1
 	}
@@ -365,13 +364,13 @@ func RequestWaffoPancakePay(c *gin.Context) {
 		return
 	}
 
-	group, err := model.GetUserGroup(id, true)
+	membership, err := model.GetUserVIPMembership(id)
 	if err != nil {
 		paymentError(c, common.NewMessage("Failed to get the user group"))
 		return
 	}
 
-	payMoney := getWaffoPancakePayMoney(req.Amount, group)
+	payMoney := getWaffoPancakePayMoney(req.Amount, common.GetUserTopupGroupRatio(membership.Group, membership.VIPLevel))
 	if payMoney < 0.01 {
 		paymentError(c, common.NewMessage("Payment amount is too low"))
 		return

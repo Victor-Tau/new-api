@@ -280,8 +280,14 @@ func Register(c *gin.Context) {
 		InviterId:   inviterId,
 		Role:        common.RoleCommonUser, // 明确设置角色为普通用户
 	}
+	emailGroup := ""
 	if common.EmailVerificationEnabled {
 		cleanUser.Email = user.Email
+		emailGroup = model.GroupForEmail(user.Email)
+		if emailGroup != "" {
+			cleanUser.Group = common.ComposeUserGroup(0, emailGroup)
+			cleanUser.SetSetting(dto.UserSetting{EmailGroup: emailGroup})
+		}
 	}
 	if err := cleanUser.Insert(inviterId); err != nil {
 		if errors.Is(err, model.ErrEmailAlreadyTaken) {
@@ -290,6 +296,10 @@ func Register(c *gin.Context) {
 		}
 		common.ApiError(c, err)
 		return
+	}
+
+	if emailGroup != "" {
+		model.RecordEmailGroupJoin(cleanUser.Id, emailGroup, cleanUser.Email)
 	}
 
 	// 获取插入后的用户ID
@@ -473,6 +483,7 @@ func GetSelf(c *gin.Context) {
 		return
 	}
 	responseData := buildSelfUserData(user)
+	responseData["pebble"] = user.GetSetting().Pebble
 	// The authenticated role is loaded from GetUserCache. It should equal the
 	// row role, but use it for capabilities so GetSelf and login/refresh remain
 	// consistent with the authorization decision made for this request.
@@ -509,6 +520,7 @@ func buildSelfUserData(user *model.User) map[string]any {
 		"wechat_id":         user.WeChatId,
 		"telegram_id":       user.TelegramId,
 		"group":             user.Group,
+		"vip_level":         user.VIPLevel,
 		"quota":             user.Quota,
 		"used_quota":        user.UsedQuota,
 		"request_count":     user.RequestCount,
@@ -780,6 +792,14 @@ func AdminClearUserBinding(c *gin.Context) {
 	})
 }
 
+func updateSelfSetting(c *gin.Context, update func(*dto.UserSetting)) {
+	if err := model.ModifyUserSetting(c.GetInt("id"), update); err != nil {
+		common.ApiErrorT(c, "Update failed")
+		return
+	}
+	common.ApiSuccessT(c, "Update successful", nil)
+}
+
 func UpdateSelf(c *gin.Context) {
 	var requestData map[string]any
 	if err := common.DecodeJson(c.Request.Body, &requestData); err != nil {
@@ -798,56 +818,47 @@ func UpdateSelf(c *gin.Context) {
 			recordUserSecurityAudit(c, c.GetInt("id"), "user.password_change", map[string]any{"success": succeeded, "notification_failed": notificationFailed})
 		}()
 	}
-	// 检查是否是用户设置更新请求 (sidebar_modules 或 language)
-	if sidebarModules, sidebarExists := requestData["sidebar_modules"]; sidebarExists && !passwordRequested {
-		userId := c.GetInt("id")
-		user, err := model.GetUserById(userId, false)
-		if err != nil {
-			common.ApiError(c, err)
+	if !passwordRequested {
+		if sidebar, exists := requestData["sidebar_modules"]; exists {
+			updateSelfSetting(c, func(setting *dto.UserSetting) {
+				if value, ok := sidebar.(string); ok {
+					setting.SidebarModules = value
+				}
+			})
 			return
 		}
-
-		// 获取当前用户设置
-		currentSetting := user.GetSetting()
-
-		// 更新sidebar_modules字段
-		if sidebarModulesStr, ok := sidebarModules.(string); ok {
-			currentSetting.SidebarModules = sidebarModulesStr
-		}
-
-		if err := model.UpdateUserSetting(user.Id, currentSetting); err != nil {
-			common.ApiErrorT(c, "Update failed")
+		if language, exists := requestData["language"]; exists {
+			updateSelfSetting(c, func(setting *dto.UserSetting) {
+				if value, ok := language.(string); ok {
+					setting.Language = value
+				}
+			})
 			return
 		}
-
-		common.ApiSuccessT(c, "Update successful", nil)
-		return
-	}
-
-	// 检查是否是语言偏好更新请求
-	if language, langExists := requestData["language"]; langExists && !passwordRequested {
-		userId := c.GetInt("id")
-		user, err := model.GetUserById(userId, false)
-		if err != nil {
-			common.ApiError(c, err)
+		if raw, exists := requestData["pebble"]; exists {
+			var pebble *dto.PebbleAvatar
+			if raw != nil {
+				fields, ok := raw.(map[string]any)
+				if !ok {
+					common.ApiErrorT(c, "Invalid parameters")
+					return
+				}
+				for _, field := range []string{"trait", "eyes", "palette", "blush"} {
+					if value, present := fields[field]; present && value == nil {
+						common.ApiErrorT(c, "Invalid parameters")
+						return
+					}
+				}
+				data, err := common.Marshal(fields)
+				pebble = &dto.PebbleAvatar{}
+				if err != nil || common.Unmarshal(data, pebble) != nil || !pebble.Valid() {
+					common.ApiErrorT(c, "Invalid parameters")
+					return
+				}
+			}
+			updateSelfSetting(c, func(setting *dto.UserSetting) { setting.Pebble = pebble })
 			return
 		}
-
-		// 获取当前用户设置
-		currentSetting := user.GetSetting()
-
-		// 更新language字段
-		if langStr, ok := language.(string); ok {
-			currentSetting.Language = langStr
-		}
-
-		if err := model.UpdateUserSetting(user.Id, currentSetting); err != nil {
-			common.ApiErrorT(c, "Update failed")
-			return
-		}
-
-		common.ApiSuccessT(c, "Update successful", nil)
-		return
 	}
 
 	// 原有的用户信息更新逻辑
@@ -1425,49 +1436,48 @@ func UpdateUserSetting(c *gin.Context) {
 	}
 	// 从已保存的设置出发，语言、侧边栏、扣费策略等不由此表单管理的字段保持不变；
 	// 请求未携带的开关也保持原值
-	settings := user.GetSetting()
-	settings.NotifyType = req.QuotaWarningType
-	settings.QuotaWarningThreshold = req.QuotaWarningThreshold
-	settings.AcceptUnsetRatioModel = req.AcceptUnsetModelRatioModel
-	settings.RecordIpLog = req.RecordIpLog
-	if req.QuotaWarningEnabled != nil {
-		settings.QuotaWarningEnabled = req.QuotaWarningEnabled
-	}
-	if user.Role >= common.RoleAdminUser {
-		if req.UpstreamModelUpdateNotifyEnabled != nil {
-			settings.UpstreamModelUpdateNotifyEnabled = *req.UpstreamModelUpdateNotifyEnabled
+	if err := model.ModifyUserSetting(user.Id, func(settings *dto.UserSetting) {
+		settings.NotifyType = req.QuotaWarningType
+		settings.QuotaWarningThreshold = req.QuotaWarningThreshold
+		settings.AcceptUnsetRatioModel = req.AcceptUnsetModelRatioModel
+		settings.RecordIpLog = req.RecordIpLog
+		if req.QuotaWarningEnabled != nil {
+			settings.QuotaWarningEnabled = req.QuotaWarningEnabled
 		}
-		if req.ChannelNotifyEnabled != nil {
-			settings.ChannelNotifyEnabled = req.ChannelNotifyEnabled
+		if user.Role >= common.RoleAdminUser {
+			if req.UpstreamModelUpdateNotifyEnabled != nil {
+				settings.UpstreamModelUpdateNotifyEnabled = *req.UpstreamModelUpdateNotifyEnabled
+			}
+			if req.ChannelNotifyEnabled != nil {
+				settings.ChannelNotifyEnabled = req.ChannelNotifyEnabled
+			}
 		}
-	}
 
-	// 只保留所选通知方式的配置，其他方式的配置清空
-	settings.WebhookUrl, settings.WebhookSecret = "", ""
-	settings.NotificationEmail = ""
-	settings.BarkUrl = ""
-	settings.GotifyUrl, settings.GotifyToken, settings.GotifyPriority = "", "", 0
-	switch req.QuotaWarningType {
-	case dto.NotifyTypeWebhook:
-		settings.WebhookUrl = req.WebhookUrl
-		settings.WebhookSecret = req.WebhookSecret
-	case dto.NotifyTypeEmail:
-		settings.NotificationEmail = req.NotificationEmail
-	case dto.NotifyTypeBark:
-		settings.BarkUrl = req.BarkUrl
-	case dto.NotifyTypeGotify:
-		settings.GotifyUrl = req.GotifyUrl
-		settings.GotifyToken = req.GotifyToken
-		// Gotify优先级范围0-10，超出范围则使用默认值5
-		if req.GotifyPriority < 0 || req.GotifyPriority > 10 {
-			settings.GotifyPriority = 5
-		} else {
-			settings.GotifyPriority = req.GotifyPriority
+		// 只保留所选通知方式的配置，其他方式的配置清空
+		settings.WebhookUrl, settings.WebhookSecret = "", ""
+		settings.NotificationEmail = ""
+		settings.BarkUrl = ""
+		settings.GotifyUrl, settings.GotifyToken, settings.GotifyPriority = "", "", 0
+		switch req.QuotaWarningType {
+		case dto.NotifyTypeWebhook:
+			settings.WebhookUrl = req.WebhookUrl
+			settings.WebhookSecret = req.WebhookSecret
+		case dto.NotifyTypeEmail:
+			settings.NotificationEmail = req.NotificationEmail
+		case dto.NotifyTypeBark:
+			settings.BarkUrl = req.BarkUrl
+		case dto.NotifyTypeGotify:
+			settings.GotifyUrl = req.GotifyUrl
+			settings.GotifyToken = req.GotifyToken
+			// Gotify优先级范围0-10，超出范围则使用默认值5
+			if req.GotifyPriority < 0 || req.GotifyPriority > 10 {
+				settings.GotifyPriority = 5
+			} else {
+				settings.GotifyPriority = req.GotifyPriority
+			}
 		}
-	}
 
-	// 更新用户设置
-	if err := model.UpdateUserSetting(user.Id, settings); err != nil {
+	}); err != nil {
 		common.ApiErrorT(c, "Update failed")
 		return
 	}

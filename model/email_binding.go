@@ -101,6 +101,7 @@ func ResendEmailBinding(identity AuthSessionIdentity, token, newCodeHash, oldCod
 func CompleteEmailBinding(identity AuthSessionIdentity, token, email, newCode, oldCode string) (*EmailBindingState, error) {
 	var state *EmailBindingState
 	var verificationError error
+	var emailChange emailGroupChange
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		// Acquire ownership protection before the first consistent read. Under
 		// MySQL REPEATABLE READ, a snapshot created before this lock could hide
@@ -141,11 +142,16 @@ func CompleteEmailBinding(identity AuthSessionIdentity, token, email, newCode, o
 		if err := tx.Model(&User{}).Where("id = ?", identity.UserID).Update("email", state.Email).Error; err != nil {
 			return err
 		}
+		emailChange, err = changeEmailGroup(tx, identity.UserID, state.Email, true)
+		if err != nil {
+			return err
+		}
 		return tx.Model(flow).Update("consumed_at", time.Now()).Error
 	})
 	if err != nil {
 		return nil, err
 	}
+	publishEmailGroupChange(identity.UserID, emailChange)
 	return state, verificationError
 }
 

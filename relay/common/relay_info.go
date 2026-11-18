@@ -18,6 +18,7 @@ import (
 	kitreasoning "github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	hosttypes "github.com/QuantumNous/new-api/types"
 
 	"github.com/MoeForge/moego/ojson"
@@ -608,10 +609,15 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 	//channelId := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
 	//paramOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelParamOverride)
 
+	userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+	usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
 	tokenGroup := common.GetContextKeyString(c, constant.ContextKeyTokenGroup)
-	// 当令牌分组为空时，表示使用用户分组
 	if tokenGroup == "" {
-		tokenGroup = common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+		// Retry in the same billing group as the initial channel selection.
+		tokenGroup = usingGroup
+		if tokenGroup == "" {
+			tokenGroup = ratio_setting.BillingGroup(userGroup)
+		}
 	}
 
 	startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
@@ -640,8 +646,8 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 
 		RequestId:  reqId,
 		UserId:     common.GetContextKeyInt(c, constant.ContextKeyUserId),
-		UsingGroup: common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
-		UserGroup:  common.GetContextKeyString(c, constant.ContextKeyUserGroup),
+		UsingGroup: usingGroup,
+		UserGroup:  userGroup,
 		UserQuota:  common.GetContextKeyInt(c, constant.ContextKeyUserQuota),
 		UserEmail:  common.GetContextKeyString(c, constant.ContextKeyUserEmail),
 

@@ -487,7 +487,7 @@ func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now
 		return "", nil
 	}
 	if err := tx.Model(&User{}).Where("id = ?", sub.UserId).
-		Update("group", target).Error; err != nil {
+		Updates(userGroupColumns(target)).Error; err != nil {
 		return "", err
 	}
 	return target, nil
@@ -536,7 +536,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 		if currentGroup != upgradeGroup {
 			prevGroup = currentGroup
 			if err := tx.Model(&User{}).Where("id = ?", userId).
-				Update("group", upgradeGroup).Error; err != nil {
+				Updates(userGroupColumns(upgradeGroup)).Error; err != nil {
 				return nil, err
 			}
 		}
@@ -1236,7 +1236,7 @@ func ExpireDueSubscriptions(limit int) (int, error) {
 				return nil
 			}
 			if err := tx.Model(&User{}).Where("id = ?", userId).
-				Update("group", target).Error; err != nil {
+				Updates(userGroupColumns(target)).Error; err != nil {
 				return err
 			}
 			cacheGroup = target

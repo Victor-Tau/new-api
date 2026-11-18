@@ -81,7 +81,7 @@ export const channelSchema = z.object({
   balance_updated_time: z.number(),
   balance_detail: channelBalanceDetailSchema.nullish(),
   models: z.string().default(''),
-  group: z.string().default('default'),
+  group: z.string().default('VIP0'),
   used_quota: z.number().default(0),
   model_mapping: z.string().nullish(),
   status_code_mapping: z.string().nullish(),

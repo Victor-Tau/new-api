@@ -219,7 +219,7 @@ func getModelListGroups(c *gin.Context) (modelListGroups, error) {
 		}, nil
 	}
 
-	group := userGroup
+	group := ratio_setting.BillingGroup(userGroup)
 	if tokenGroup != "" {
 		group = tokenGroup
 	}
