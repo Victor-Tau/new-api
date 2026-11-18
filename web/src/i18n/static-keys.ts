@@ -838,7 +838,7 @@ export const STATIC_I18N_KEYS = [
   'Confirm email',
   'Confirm both your current and new email addresses to finish this change.',
   'Confirm the verification code sent to your new email address.',
-  'Enter the 6-digit email verification code.',
+  'Enter the 6-character email verification code.',
   'Password authentication is disabled.',
   'This external account is already bound.',
   'This email address is already in use.',

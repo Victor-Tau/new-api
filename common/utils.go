@@ -204,15 +204,19 @@ func GetUUID() string {
 const keyChars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 func GenerateRandomCharsKey(length int) (string, error) {
+	return generateRandomChars(length, keyChars)
+}
+
+func generateRandomChars(length int, alphabet string) (string, error) {
 	b := make([]byte, length)
-	maxI := big.NewInt(int64(len(keyChars)))
+	maxI := big.NewInt(int64(len(alphabet)))
 
 	for i := range b {
 		n, err := crand.Int(crand.Reader, maxI)
 		if err != nil {
 			return "", err
 		}
-		b[i] = keyChars[n.Int64()]
+		b[i] = alphabet[n.Int64()]
 	}
 
 	return string(b), nil

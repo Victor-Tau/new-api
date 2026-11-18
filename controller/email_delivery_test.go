@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/base64"
 	"errors"
 	"html"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/system_setting"
+	webassets "github.com/QuantumNous/new-api/web"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -331,6 +333,7 @@ func TestRegistrationEmailDomainWhitelist(t *testing.T) {
 	common.EmailDomainWhitelist = []string{"@*.edu.cn"}
 	assert.Contains(t, register("wrong"), "Verification code is incorrect or has expired")
 	assert.Contains(t, register(code), `"success":true`)
+	assert.False(t, common.VerifyCodeWithKey(email, code, common.EmailVerificationPurpose))
 }
 
 func TestAuthEmailTemplatesThroughDelivery(t *testing.T) {
@@ -345,9 +348,30 @@ func TestAuthEmailTemplatesThroughDelivery(t *testing.T) {
 	})
 
 	type sentEmail struct {
-		To      []string `json:"to"`
-		Subject string   `json:"subject"`
-		HTML    string   `json:"html"`
+		To          []string `json:"to"`
+		Subject     string   `json:"subject"`
+		HTML        string   `json:"html"`
+		Attachments []struct {
+			Filename    string `json:"filename"`
+			ContentID   string `json:"content_id"`
+			ContentType string `json:"content_type"`
+			Content     string `json:"content"`
+		} `json:"attachments"`
+	}
+	checkIllustration := func(message sentEmail, filename string) {
+		t.Helper()
+		require.Len(t, message.Attachments, 1)
+		image := message.Attachments[0]
+		assert.Equal(t, filename, image.Filename)
+		assert.Equal(t, "image/png", image.ContentType)
+		require.NotEmpty(t, image.ContentID)
+		assert.Contains(t, message.HTML, `src="cid:`+image.ContentID+`"`)
+		assert.NotContains(t, message.HTML, "/email-assets/")
+		decoded, err := base64.StdEncoding.DecodeString(image.Content)
+		require.NoError(t, err)
+		asset, err := webassets.EmailIllustration(filename)
+		require.NoError(t, err)
+		assert.Equal(t, asset, decoded)
 	}
 	var sent []sentEmail
 	http.DefaultTransport = emailHTTPTransport(func(request *http.Request) (*http.Response, error) {
@@ -379,9 +403,9 @@ func TestAuthEmailTemplatesThroughDelivery(t *testing.T) {
 	assert.Contains(t, sent[0].HTML, `<html lang="zh-CN">`)
 	assert.Contains(t, sent[0].HTML, "欢迎加入 Site &amp; &lt;Brand&gt;")
 	assert.Contains(t, sent[0].HTML, "7 分钟内有效")
-	assert.Contains(t, sent[0].HTML, `src="https://dashboard.example.com/email-assets/email-register.png"`)
+	checkIllustration(sent[0], "email-register.png")
 	assert.NotContains(t, sent[0].HTML, "<svg")
-	cells := regexp.MustCompile(`>([0-9a-f])</td>`).FindAllStringSubmatch(sent[0].HTML, -1)
+	cells := regexp.MustCompile(`>([A-Z])</td>`).FindAllStringSubmatch(sent[0].HTML, -1)
 	require.Len(t, cells, 6)
 	var code strings.Builder
 	for _, cell := range cells {
@@ -404,7 +428,7 @@ func TestAuthEmailTemplatesThroughDelivery(t *testing.T) {
 	assert.Contains(t, sent[1].HTML, `<html lang="zh-TW">`)
 	assert.Contains(t, sent[1].HTML, "7 分鐘內有效")
 	assert.Contains(t, html.UnescapeString(sent[1].HTML), `>reset+tag@example.com</strong>`)
-	assert.Contains(t, sent[1].HTML, `src="https://dashboard.example.com/email-assets/email-reset-password.png"`)
+	checkIllustration(sent[1], "email-reset-password.png")
 	assert.NotContains(t, sent[1].HTML, "untrusted.example")
 	assert.NotContains(t, sent[1].HTML, "<svg")
 	href := regexp.MustCompile(`href="([^"]+)"`).FindStringSubmatch(sent[1].HTML)

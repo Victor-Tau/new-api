@@ -352,6 +352,9 @@ export function SignUpForm({
               <div className='flex-1'>
                 <Input
                   placeholder={t('Verification code')}
+                  autoComplete='one-time-code'
+                  autoCapitalize='characters'
+                  spellCheck={false}
                   value={verificationCode}
                   onChange={(e) => setVerificationCode(e.target.value)}
                 />

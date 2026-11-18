@@ -770,7 +770,7 @@ it('confirms both email addresses after identity verification and freezes the su
   expect(await screen.findByLabelText('Email Address')).toBeDisabled()
   await user.type(
     await screen.findByLabelText('New email verification code'),
-    '123456'
+    'ABCDEF'
   )
   await user.type(
     screen.getByLabelText('Current email verification code'),
@@ -780,7 +780,7 @@ it('confirms both email addresses after identity verification and freezes the su
   await waitFor(() => expect(onSuccess).toHaveBeenCalledOnce())
   expect(post).toHaveBeenCalledWith(
     '/api/oauth/email/bind',
-    { flow_token: 'email-flow', new_code: '123456', old_code: '654321' },
+    { flow_token: 'email-flow', new_code: 'ABCDEF', old_code: '654321' },
     expect.objectContaining({ singleUseAuthorization: true })
   )
 })

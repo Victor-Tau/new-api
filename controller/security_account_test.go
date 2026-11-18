@@ -325,7 +325,7 @@ func (mailbox *securityMailbox) code(t *testing.T, receiver string) string {
 	mailbox.mutex.Lock()
 	defer mailbox.mutex.Unlock()
 	for index := len(mailbox.mail[receiver]) - 1; index >= 0; index-- {
-		match := regexp.MustCompile(`<strong>([0-9]{6})</strong>`).FindStringSubmatch(mailbox.mail[receiver][index])
+		match := regexp.MustCompile(`<strong>([A-Z]{6})</strong>`).FindStringSubmatch(mailbox.mail[receiver][index])
 		if len(match) == 2 {
 			return match[1]
 		}
@@ -595,12 +595,12 @@ func TestSecurityAccountEncryptedLongPasswordLogin(t *testing.T) {
 }
 
 func TestSecurityAccountEmailConfirmationAndAudit(t *testing.T) {
-	for _, scenario := range []string{"first email", "replace without mfa", "replace with mfa"} {
+	for _, scenario := range []string{"first email", "replace without mfa", "replace with mfa", "existing numeric code"} {
 		t.Run(scenario, func(t *testing.T) {
 			user, identity := setupSecurityEnrollmentTest(t)
 			mailbox := newSecurityMailbox(t)
 			method, previous := service.VerificationMethodPassword, ""
-			if scenario != "first email" {
+			if scenario == "replace without mfa" || scenario == "replace with mfa" {
 				previous = "previous@example.com"
 				require.NoError(t, model.DB.Model(user).Update("email", previous).Error)
 			}
@@ -612,10 +612,18 @@ func TestSecurityAccountEmailConfirmationAndAudit(t *testing.T) {
 			assert.Equal(t, "new@example.com", flow.Email)
 			assert.Equal(t, scenario == "replace without mfa", flow.OldEmailRequired)
 			newCode, oldCode := mailbox.code(t, flow.Email), ""
-			_, state, err := model.GetEmailBinding(identity, flow.FlowToken)
+			storedFlow, state, err := model.GetEmailBinding(identity, flow.FlowToken)
 			require.NoError(t, err)
 			assert.NotEqual(t, newCode, state.NewCodeHash)
 			assert.True(t, common.ValidatePasswordAndHash(newCode, state.NewCodeHash))
+			if scenario == "existing numeric code" {
+				newCode = "012345"
+				state.NewCodeHash, err = common.Password2Hash(newCode)
+				require.NoError(t, err)
+				payload, err := common.Marshal(state)
+				require.NoError(t, err)
+				require.NoError(t, model.DB.Model(storedFlow).Update("payload", string(payload)).Error)
+			}
 			if flow.OldEmailRequired {
 				oldCode = mailbox.code(t, previous)
 				_, err := service.FinishEmailBinding(identity, flow.FlowToken, newCode, "")
@@ -645,9 +653,7 @@ func TestSecurityAccountEmailConfirmationAndAudit(t *testing.T) {
 			require.NoError(t, err)
 			assert.Contains(t, string(encoded), "user.binding_bind")
 			assert.NotContains(t, string(encoded), flow.FlowToken)
-			// Audit event and request IDs are long runs of time digits that can
-			// contain the six-digit code by chance; only the whole code is a leak.
-			assert.NotRegexp(t, `(^|\D)`+newCode+`(\D|$)`, string(encoded))
+			assert.NotContains(t, string(encoded), newCode)
 		})
 	}
 }

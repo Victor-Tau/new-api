@@ -75,7 +75,25 @@ func newSMTPClient(addr string) (*smtp.Client, error) {
 	return client, nil
 }
 
+type EmailInlinePNG struct {
+	Filename  string
+	ContentID string
+	Data      []byte
+}
+
 func SendEmail(subject string, receiver string, content string) error {
+	return sendEmail(subject, receiver, content, nil)
+}
+
+func SendEmailWithInlinePNG(subject, receiver, content string, image EmailInlinePNG) error {
+	if image.Filename == "" || image.ContentID == "" || len(image.Data) == 0 ||
+		strings.ContainsAny(image.ContentID, "<>\r\n\x00 \t") {
+		return fmt.Errorf("invalid inline email image")
+	}
+	return sendEmail(subject, receiver, content, &image)
+}
+
+func sendEmail(subject, receiver, content string, image *EmailInlinePNG) error {
 	OptionMapRWMutex.RLock()
 	provider := OptionMap["EmailProvider"]
 	resendKey := OptionMap["ResendApiKey"]
@@ -85,7 +103,7 @@ func SendEmail(subject string, receiver string, content string) error {
 	// a failed response does not prove that the first provider did not send.
 	switch provider {
 	case "resend":
-		return sendResendEmail(resendKey, resendFrom, subject, receiver, content)
+		return sendResendEmail(resendKey, resendFrom, subject, receiver, content, image)
 	case "", "smtp": // Preserve existing installations without a selector.
 	default:
 		return NewMessage("Email sending method must be SMTP or Resend")
@@ -101,13 +119,18 @@ func SendEmail(subject string, receiver string, content string) error {
 		return NewMessage("SMTP server is not configured")
 	}
 	encodedSubject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(subject)))
-	mail := []byte(fmt.Sprintf("To: %s\r\n"+
+	var mail strings.Builder
+	fmt.Fprintf(&mail, "To: %s\r\n"+
 		"From: %s <%s>\r\n"+
 		"Subject: %s\r\n"+
 		"Date: %s\r\n"+
-		"Message-ID: %s\r\n"+ // 添加 Message-ID 头
-		"Content-Type: text/html; charset=UTF-8\r\n\r\n%s\r\n",
-		receiver, SystemName, SMTPFrom, encodedSubject, time.Now().Format(time.RFC1123Z), id, content))
+		"Message-ID: %s\r\n",
+		receiver, SystemName, SMTPFrom, encodedSubject, time.Now().Format(time.RFC1123Z), id)
+	if image == nil {
+		fmt.Fprintf(&mail, "Content-Type: text/html; charset=UTF-8\r\n\r\n%s\r\n", content)
+	} else if err := writeSMTPRelatedBody(&mail, content, *image); err != nil {
+		return err
+	}
 	auth := getSMTPAuth()
 	addr := fmt.Sprintf("%s:%d", SMTPServer, SMTPPort)
 	to := strings.Split(receiver, ";")
@@ -134,7 +157,7 @@ func SendEmail(subject string, receiver string, content string) error {
 	if err != nil {
 		return err
 	}
-	_, err = w.Write(mail)
+	_, err = w.Write([]byte(mail.String()))
 	if err != nil {
 		return err
 	}

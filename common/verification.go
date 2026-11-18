@@ -1,6 +1,7 @@
 package common
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,28 @@ func GenerateVerificationCode(length int) string {
 		return code
 	}
 	return code[:length]
+}
+
+func GenerateEmailVerificationCode() (string, error) {
+	return generateRandomChars(6, "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+}
+
+func ValidateEmailBindingCode(code string) (string, error) {
+	const invalidCode = "invalid email verification code"
+	code = strings.ReplaceAll(code, " ", "")
+	if len(code) != 6 {
+		return "", errors.New(invalidCode)
+	}
+	// Existing email-binding flows may still contain hashes of numeric codes.
+	if code[0] >= '0' && code[0] <= '9' {
+		return ValidateNumericCode(code)
+	}
+	for i := range len(code) {
+		if code[i] < 'A' || code[i] > 'Z' {
+			return "", errors.New(invalidCode)
+		}
+	}
+	return code, nil
 }
 
 func RegisterVerificationCodeWithKey(key string, code string, purpose string) {

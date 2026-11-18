@@ -1,11 +1,9 @@
 package service
 
 import (
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"html"
-	"math/big"
 	"slices"
 	"strings"
 	"time"
@@ -166,11 +164,10 @@ func generateEmailBindingCodes(requireOld bool) (emailBindingCodes, error) {
 		count = 2
 	}
 	for index := 0; index < count; {
-		number, err := rand.Int(rand.Reader, big.NewInt(1_000_000))
+		code, err := common.GenerateEmailVerificationCode()
 		if err != nil {
 			return codes, err
 		}
-		code := fmt.Sprintf("%06d", number.Int64())
 		if code == codes.New {
 			continue
 		}

@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/setting/system_setting"
+	webassets "github.com/QuantumNous/new-api/web"
 )
 
 //go:embed email_templates/*.html
@@ -22,7 +23,7 @@ type authEmailData struct {
 	Params   map[string]any
 	Digits   []string
 	Link     string
-	ImageURL string
+	ImageURL template.URL
 	Year     int
 }
 
@@ -32,7 +33,13 @@ var authEmailTemplates = template.Must(template.New("auth-email").Option("missin
 	},
 }).ParseFS(authEmailFS, "email_templates/*.html"))
 
-func renderAuthEmail(name, subjectKey, lang string, data authEmailData) (string, string, error) {
+type authEmail struct {
+	subject string
+	html    string
+	image   common.EmailInlinePNG
+}
+
+func renderAuthEmail(name, subjectKey, lang string, data authEmailData) (authEmail, error) {
 	if lang == "" {
 		lang = common.DefaultLanguage
 	}
@@ -40,20 +47,28 @@ func renderAuthEmail(name, subjectKey, lang string, data authEmailData) (string,
 	data.Params["SystemName"] = common.SystemName
 	data.Params["Minutes"] = common.VerificationValidMinutes
 	data.Subject = i18n.Translate(data.Language, subjectKey, data.Params)
-	data.ImageURL = strings.TrimRight(system_setting.ServerAddress, "/") + "/email-assets/" + strings.TrimSuffix(name, ".html") + ".png"
 	data.Year = time.Now().Year()
+	filename := strings.TrimSuffix(name, ".html") + ".png"
+	image, err := webassets.EmailIllustration(filename)
+	if err != nil {
+		return authEmail{}, errors.New("failed to load authentication email illustration")
+	}
+	contentID := common.GetUUID() + "@new-api"
+	data.ImageURL = template.URL("cid:" + contentID) // The ID is generated locally, without user input.
 
 	var body strings.Builder
 	if err := authEmailTemplates.ExecuteTemplate(&body, name, data); err != nil {
-		return "", "", errors.New("failed to render authentication email")
+		return authEmail{}, errors.New("failed to render authentication email")
 	}
-	return data.Subject, body.String(), nil
+	return authEmail{subject: data.Subject, html: body.String(), image: common.EmailInlinePNG{
+		Filename: filename, ContentID: contentID, Data: image,
+	}}, nil
 }
 
-func renderPasswordResetEmail(lang, email, token string) (string, string, error) {
+func renderPasswordResetEmail(lang, email, token string) (authEmail, error) {
 	base, err := url.Parse(system_setting.ServerAddress)
 	if err != nil || base.Host == "" || base.User != nil || (base.Scheme != "https" && base.Scheme != "http") {
-		return "", "", errors.New("invalid server address for password reset email")
+		return authEmail{}, errors.New("invalid server address for password reset email")
 	}
 	link := base.JoinPath("user", "reset")
 	link.RawQuery = (url.Values{"email": {email}, "token": {token}}).Encode()

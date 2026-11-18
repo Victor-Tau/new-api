@@ -230,10 +230,14 @@ func SendEmailVerification(c *gin.Context) {
 		common.ApiErrorT(c, "Email address is already in use")
 		return
 	}
-	code := common.GenerateVerificationCode(6)
+	code, err := common.GenerateEmailVerificationCode()
+	if err != nil {
+		common.ApiErrorT(c, "Failed to send verification email")
+		return
+	}
 	// The address may not belong to an account yet, so the mail follows the
 	// request language.
-	subject, content, err := renderAuthEmail("email-register.html", i18n.MsgEmailVerificationSubject, i18n.StatedLang(c), authEmailData{
+	message, err := renderAuthEmail("email-register.html", i18n.MsgEmailVerificationSubject, i18n.StatedLang(c), authEmailData{
 		Params: map[string]any{"Code": code},
 		Digits: strings.Split(code, ""),
 	})
@@ -243,7 +247,7 @@ func SendEmailVerification(c *gin.Context) {
 		return
 	}
 	common.RegisterVerificationCodeWithKey(email, code, common.EmailVerificationPurpose)
-	err = common.SendEmail(subject, email, content)
+	err = common.SendEmailWithInlinePNG(message.subject, email, message.html, message.image)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -267,10 +271,10 @@ func SendPasswordResetEmail(c *gin.Context) {
 		if lang == "" {
 			lang = i18n.StatedLang(c)
 		}
-		subject, content, err := renderPasswordResetEmail(lang, email, code)
+		message, err := renderPasswordResetEmail(lang, email, code)
 		if err == nil {
 			common.RegisterVerificationCodeWithKey(email, code, common.PasswordResetPurpose)
-			err = common.SendEmail(subject, email, content)
+			err = common.SendEmailWithInlinePNG(message.subject, email, message.html, message.image)
 		}
 		if err != nil {
 			logger.LogError(c.Request.Context(), common.LogText("failed to send password reset email to %s: %s", email, err.Error()))

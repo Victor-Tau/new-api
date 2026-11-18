@@ -301,6 +301,9 @@ func Register(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if cleanUser.Email != "" {
+		common.DeleteKey(cleanUser.Email, common.EmailVerificationPurpose)
+	}
 
 	if emailGroup != "" {
 		model.RecordEmailGroupJoin(cleanUser.Id, emailGroup, cleanUser.Email)

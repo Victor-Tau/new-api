@@ -2,15 +2,21 @@ package common
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
+	"mime"
+	"mime/multipart"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"strconv"
 	"strings"
@@ -293,6 +299,51 @@ func TestSendEmailUsesExplicitStartTLSWithInsecureCertificate(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for SMTP DATA")
 	}
+}
+
+func TestSendEmailSMTPEmbedsInlinePNG(t *testing.T) {
+	server := newFakeSMTPServer(t)
+	t.Cleanup(server.close)
+	withSMTPSettings(t)
+	SMTPServer, SMTPPort = server.host, server.port
+	SMTPAccount, SMTPFrom, SMTPToken = "sender@example.com", "sender@example.com", ""
+	SMTPSSLEnabled, SMTPStartTLSEnabled = false, false
+	image := EmailInlinePNG{Filename: "logo.png", ContentID: "logo@example.com", Data: bytes.Repeat([]byte{0x00, 0xff, 0x0a}, 70)}
+	html := `<p>验证码</p><img src="cid:logo@example.com">`
+	require.NoError(t, SendEmailWithInlinePNG("Verification", "receiver@example.com", html, image))
+	var raw string
+	select {
+	case raw = <-server.messages:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for SMTP DATA")
+	}
+	message, err := mail.ReadMessage(strings.NewReader(raw))
+	require.NoError(t, err)
+	require.Equal(t, "1.0", message.Header.Get("MIME-Version"))
+	mediaType, parameters, err := mime.ParseMediaType(message.Header.Get("Content-Type"))
+	require.NoError(t, err)
+	require.Equal(t, "multipart/related", mediaType)
+	parts := multipart.NewReader(message.Body, parameters["boundary"])
+	part, err := parts.NextPart()
+	require.NoError(t, err)
+	require.Equal(t, "text/html; charset=UTF-8", part.Header.Get("Content-Type"))
+	decodedHTML, err := io.ReadAll(part)
+	require.NoError(t, err)
+	require.Equal(t, html, string(decodedHTML))
+	part, err = parts.NextPart()
+	require.NoError(t, err)
+	require.Equal(t, "<logo@example.com>", part.Header.Get("Content-ID"))
+	require.Equal(t, "image/png", part.Header.Get("Content-Type"))
+	require.Equal(t, "base64", part.Header.Get("Content-Transfer-Encoding"))
+	disposition, params, err := mime.ParseMediaType(part.Header.Get("Content-Disposition"))
+	require.NoError(t, err)
+	require.Equal(t, "inline", disposition)
+	require.Equal(t, image.Filename, params["filename"])
+	decoded, err := io.ReadAll(base64.NewDecoder(base64.StdEncoding, part))
+	require.NoError(t, err)
+	require.Equal(t, image.Data, decoded)
+	_, err = parts.NextPart()
+	require.ErrorIs(t, err, io.EOF)
 }
 
 func TestSendEmailExplicitStartTLSRequiresServerSupport(t *testing.T) {
