@@ -116,15 +116,17 @@ type responsesWSSession struct {
 	clientWriteBudget helper.StreamWriteBudget
 
 	// These fields belong to the serial request worker and describe the actual
-	// established connection. Per-request token/user data is never stored here.
-	lastResponseID  string
-	lockedModel     string
-	lockedChannelID int
-	lockedGroup     string
-	lockedKey       string
-	lockedKeyIndex  int
-	lockedContext   map[appconstant.ContextKey]any
-	lockedRoute     dto.AdvancedCustomRoute
+	// established connection. Client authorization is refreshed on each request.
+	lastResponseID       string
+	initialModel         string
+	lockedUpstreamModel  string
+	lockedChannelID      int
+	lockedGroup          string
+	lockedKey            string
+	lockedKeyIndex       int
+	lockedContext        map[appconstant.ContextKey]any
+	lockedRoute          dto.AdvancedCustomRoute
+	lockedHeaderOverride map[string]any
 }
 
 func ResponsesWebSocketHelper(c *gin.Context, client *websocket.Conn, runner ResponsesWSRequestRunner) *types.NewAPIError {
@@ -275,9 +277,6 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 	if modelName == "" {
 		return newResponsesWSInvalidRequestError(errors.New("model is required"))
 	}
-	if s.lockedModel != "" && modelName != s.lockedModel {
-		return newResponsesWSInvalidRequestError(fmt.Errorf("responses websocket connection is locked to model %q", s.lockedModel))
-	}
 	common.SetContextKey(c, appconstant.ContextKeyOriginalModel, modelName)
 	common.SetContextKey(c, appconstant.ContextKeyRequestStartTime, time.Now())
 	// As on HTTP, the request plugins' ingress reads the create before the
@@ -316,6 +315,14 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 		if apiErr != nil {
 			recordResponsesWSPluginError(c, info, apiErr)
 			return apiErr
+		}
+		// A path template uses the mapped model, so the same route definition
+		// can still require a different handshake.
+		if strings.Contains(s.lockedRoute.UpstreamPath, "{model}") && info.UpstreamModelName != s.lockedUpstreamModel {
+			return newResponsesWSInvalidRequestError(fmt.Errorf("model %q requires a different upstream route; reconnect required", modelName))
+		}
+		if modelName != s.initialModel && !reflect.DeepEqual(relaycommon.GetEffectiveHeaderOverride(info), s.lockedHeaderOverride) {
+			return newResponsesWSInvalidRequestError(fmt.Errorf("model %q requires different upstream headers; reconnect required", modelName))
 		}
 		if err := s.writeTarget(websocket.TextMessage, payload); err != nil {
 			state.closeCode = websocket.CloseInternalServerErr
@@ -375,8 +382,10 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				state.closeCode = websocket.CloseInternalServerErr
 				return types.NewError(err, types.ErrorCodeBadResponse, types.ErrOptionWithSkipRetry())
 			}
-			s.lockedModel, s.lockedChannelID, s.lockedGroup = modelName, channel.Id, info.UsingGroup
+			s.initialModel, s.lockedUpstreamModel = modelName, info.UpstreamModelName
+			s.lockedChannelID, s.lockedGroup = channel.Id, info.UsingGroup
 			s.lockedKey, s.lockedKeyIndex = info.ApiKey, info.ChannelMultiKeyIndex
+			s.lockedHeaderOverride = relaycommon.GetEffectiveHeaderOverride(info)
 			s.lockedRoute, _ = connectionOtherSettings(c, channel).AdvancedCustom.MatchPathForModel(c.Request.URL.Path, modelName)
 			s.lockedContext = make(map[appconstant.ContextKey]any)
 			for _, key := range []appconstant.ContextKey{
@@ -650,8 +659,6 @@ func responsesWSErrorEndsRequest(event responsesWSErrorEvent, streamID, response
 }
 
 func (s *responsesWSSession) restoreConnectionContext(c *gin.Context, model string) *types.NewAPIError {
-	// The channel type is not rechecked: a locked channel keeps its type, and
-	// the FilterResponsesWebSocket rules were applied when it was selected.
 	channel, err := appmodel.CacheGetChannel(s.lockedChannelID)
 	if err != nil || channel == nil || channel.Status != common.ChannelStatusEnabled || !channel.GetSetting().ResponsesWebSocketEnabled {
 		return types.NewErrorWithStatusCode(errors.New("Responses WebSocket is disabled for this channel"), types.ErrorCode(appdto.FilterResponsesWebSocket), http.StatusForbidden, types.ErrOptionWithSkipRetry())
@@ -667,7 +674,8 @@ func (s *responsesWSSession) restoreConnectionContext(c *gin.Context, model stri
 	}
 	// Changes that alter the physical upstream connection require a new
 	// handshake. Request-level settings can be refreshed without rotating keys.
-	if channel.GetBaseURL() != s.lockedContext[appconstant.ContextKeyChannelBaseUrl] ||
+	if channel.Type != s.lockedContext[appconstant.ContextKeyChannelType] ||
+		channel.GetBaseURL() != s.lockedContext[appconstant.ContextKeyChannelBaseUrl] ||
 		!reflect.DeepEqual(channel.GetHeaderOverride(), s.lockedContext[appconstant.ContextKeyChannelHeaderOverride]) {
 		return types.NewErrorWithStatusCode(errors.New("upstream connection settings changed; reconnect required"), types.ErrorCodeAccessDenied, http.StatusForbidden, types.ErrOptionWithSkipRetry())
 	}
@@ -682,10 +690,15 @@ func (s *responsesWSSession) restoreConnectionContext(c *gin.Context, model stri
 		c.Set(string(appconstant.ContextKeyProviderPlugin), pinned)
 	}
 	otherSettings := connectionOtherSettings(c, channel)
-	route, _ := otherSettings.AdvancedCustom.MatchPathForModel(c.Request.URL.Path, model)
-	if strings.TrimSpace(route.UpstreamPath) != strings.TrimSpace(s.lockedRoute.UpstreamPath) ||
+	route, matched := otherSettings.AdvancedCustom.MatchPathForModel(c.Request.URL.Path, model)
+	requiresRoute := channel.Type == appconstant.ChannelTypeAdvancedCustom || channel.Type == appconstant.ChannelTypeTaskPlugin
+	if requiresRoute && !matched ||
+		strings.TrimSpace(route.UpstreamPath) != strings.TrimSpace(s.lockedRoute.UpstreamPath) ||
 		route.IsNative() != s.lockedRoute.IsNative() ||
 		!reflect.DeepEqual(route.Auth, s.lockedRoute.Auth) {
+		if model != s.initialModel {
+			return newResponsesWSInvalidRequestError(fmt.Errorf("model %q requires a different upstream route; reconnect required", model))
+		}
 		return types.NewErrorWithStatusCode(errors.New("upstream route changed; reconnect required"), types.ErrorCodeAccessDenied, http.StatusForbidden, types.ErrOptionWithSkipRetry())
 	}
 	if pin, found, _ := service.GetChannelConstraints(c).ResolvedPin(); found {
@@ -702,6 +715,9 @@ func (s *responsesWSSession) restoreConnectionContext(c *gin.Context, model stri
 			common.SetContextKey(c, appconstant.ContextKeyAutoGroup, group)
 		}
 		if !appmodel.IsChannelEnabledForGroupModel(group, model, s.lockedChannelID) {
+			if model != s.initialModel {
+				return newResponsesWSInvalidRequestError(fmt.Errorf("model %q is not available on the current upstream channel; reconnect required", model))
+			}
 			return types.NewErrorWithStatusCode(errors.New("the connection channel is no longer allowed for this group and model"), types.ErrorCodeAccessDenied, http.StatusForbidden, types.ErrOptionWithSkipRetry())
 		}
 	}

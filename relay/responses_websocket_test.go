@@ -269,8 +269,12 @@ func TestRestoreConnectionContextRejectsChangedAdvancedCustomRoute(t *testing.T)
 	service.GetChannelConstraints(c).AddPin(appdto.ChannelPin{ChannelId: channel.Id, Source: appdto.PinSourceToken, Rank: appdto.PinRankToken, RetryMode: appdto.PinRetrySingleAttempt})
 	route, ok := channel.GetOtherSettings().AdvancedCustom.MatchPathForModel("/v1/responses", "ws-model")
 	require.True(t, ok)
-	session := &responsesWSSession{lockedChannelID: channel.Id, lockedModel: "ws-model", lockedKey: "sk-test", lockedRoute: route,
-		lockedContext: map[constant.ContextKey]any{constant.ContextKeyChannelBaseUrl: channel.GetBaseURL(), constant.ContextKeyChannelHeaderOverride: channel.GetHeaderOverride()}}
+	session := &responsesWSSession{lockedChannelID: channel.Id, initialModel: "ws-model", lockedKey: "sk-test", lockedRoute: route,
+		lockedContext: map[constant.ContextKey]any{
+			constant.ContextKeyChannelType:           channel.Type,
+			constant.ContextKeyChannelBaseUrl:        channel.GetBaseURL(),
+			constant.ContextKeyChannelHeaderOverride: channel.GetHeaderOverride(),
+		}}
 	require.Nil(t, session.restoreConnectionContext(c, "ws-model"))
 
 	// Request-level edits (model list, explicit none converter) keep the connection.
@@ -325,7 +329,7 @@ func TestResponsesWSChannelRoutingRequiresExplicitOptIn(t *testing.T) {
 	enabled.SetSetting(dto.ChannelSettings{ResponsesWebSocketEnabled: false})
 	require.NoError(t, database.Model(enabled).Update("setting", enabled.Setting).Error)
 	model.InitChannelCache()
-	session := &responsesWSSession{lockedChannelID: enabled.Id, lockedModel: "ws-model"}
+	session := &responsesWSSession{lockedChannelID: enabled.Id}
 	apiErr = session.restoreConnectionContext(c, "ws-model")
 	require.NotNil(t, apiErr)
 	assert.Equal(t, http.StatusForbidden, apiErr.StatusCode)
