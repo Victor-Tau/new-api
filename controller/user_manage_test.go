@@ -662,9 +662,10 @@ func TestUpdateUserSettingKeepsWhatTheRequestLeavesOut(t *testing.T) {
 	}
 	kept := func(setting dto.UserSetting) dto.UserSetting {
 		setting.Language, setting.SidebarModules, setting.BillingPreference = stored.Language, stored.SidebarModules, stored.BillingPreference
+		setting.RecordIpLog = true
 		return setting
 	}
-	switchesChanged := `{"notify_type":"email","quota_warning_threshold":0,"quota_warning_enabled":true,"channel_notify_enabled":false,"upstream_model_update_notify_enabled":false}`
+	switchesChanged := `{"notify_type":"email","quota_warning_threshold":0,"quota_warning_enabled":true,"channel_notify_enabled":false,"upstream_model_update_notify_enabled":false,"record_ip_log":false}`
 	for _, tc := range []struct {
 		name        string
 		role        int
@@ -680,7 +681,7 @@ func TestUpdateUserSettingKeepsWhatTheRequestLeavesOut(t *testing.T) {
 			want: kept(dto.UserSetting{
 				NotifyType: dto.NotifyTypeWebhook, WebhookUrl: "https://example.com/hook", WebhookSecret: "hook-secret",
 				QuotaWarningThreshold: 2000, QuotaWarningEnabled: &off, ChannelNotifyEnabled: &on, UpstreamModelUpdateNotifyEnabled: true,
-				AcceptUnsetRatioModel: true, RecordIpLog: true,
+				AcceptUnsetRatioModel: true,
 			}),
 		},
 		{
@@ -723,6 +724,29 @@ func TestUpdateUserSettingKeepsWhatTheRequestLeavesOut(t *testing.T) {
 			assert.Equal(t, tc.want, user.GetSetting())
 		})
 	}
+}
+
+func TestGetSelfReportsIPLoggingEnabledForLegacySettings(t *testing.T) {
+	db := setupManageUserTestDB(t)
+	user := model.User{Username: "ip-setting-owner", Role: common.RoleCommonUser,
+		Setting: `{"record_ip_log":false,"external_setting":9007199254740993}`}
+	require.NoError(t, db.Create(&user).Error)
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/user/self", nil)
+	c.Set("id", user.Id)
+	c.Set("role", user.Role)
+	GetSelf(c)
+
+	var response struct {
+		Success bool
+		Data    struct{ Setting string }
+	}
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	require.True(t, response.Success)
+	assert.Contains(t, response.Data.Setting, `"record_ip_log":true`)
+	assert.Contains(t, response.Data.Setting, `"external_setting":9007199254740993`)
 }
 
 func TestSelfPebbleSaveAndResetPreservesSettings(t *testing.T) {

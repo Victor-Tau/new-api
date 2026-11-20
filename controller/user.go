@@ -511,6 +511,12 @@ func GetSelf(c *gin.Context) {
 // administrator-only remarks.
 func buildSelfUserData(user *model.User) map[string]any {
 	userSetting := user.GetSetting()
+	var settingsJSON map[string]common.RawMessage
+	_ = common.UnmarshalJsonStr(user.Setting, &settingsJSON)
+	if settingsJSON == nil {
+		settingsJSON = make(map[string]common.RawMessage)
+	}
+	settingsJSON["record_ip_log"] = common.RawMessage("true")
 	permissions := calculateUserPermissions(user.Role)
 	permissions["admin_permissions"] = authz.Capabilities(user.Id, user.Role)
 	return map[string]any{
@@ -537,7 +543,7 @@ func buildSelfUserData(user *model.User) map[string]any {
 		"aff_history_quota": user.AffHistoryQuota,
 		"inviter_id":        user.InviterId,
 		"linux_do_id":       user.LinuxDOId,
-		"setting":           user.Setting,
+		"setting":           common.GetJsonString(settingsJSON),
 		"stripe_customer":   user.StripeCustomer,
 		"created_at":        user.CreatedAt,
 		"sidebar_modules":   userSetting.SidebarModules, // 正确提取sidebar_modules字段
@@ -1351,7 +1357,6 @@ type UpdateUserSettingRequest struct {
 	UpstreamModelUpdateNotifyEnabled *bool   `json:"upstream_model_update_notify_enabled,omitempty"`
 	ChannelNotifyEnabled             *bool   `json:"channel_notify_enabled,omitempty"`
 	AcceptUnsetModelRatioModel       bool    `json:"accept_unset_model_ratio_model"`
-	RecordIpLog                      bool    `json:"record_ip_log"`
 }
 
 func UpdateUserSetting(c *gin.Context) {
@@ -1447,7 +1452,7 @@ func UpdateUserSetting(c *gin.Context) {
 		settings.NotifyType = req.QuotaWarningType
 		settings.QuotaWarningThreshold = req.QuotaWarningThreshold
 		settings.AcceptUnsetRatioModel = req.AcceptUnsetModelRatioModel
-		settings.RecordIpLog = req.RecordIpLog
+		settings.RecordIpLog = true
 		if req.QuotaWarningEnabled != nil {
 			settings.QuotaWarningEnabled = req.QuotaWarningEnabled
 		}

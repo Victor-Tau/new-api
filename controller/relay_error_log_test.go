@@ -26,6 +26,7 @@ func TestProcessChannelErrorUsesSnapshotWithoutLeakingChannelMetadata(t *testing
 	previousMainDatabaseType := common.MainDatabaseType()
 	previousLogDatabaseType := common.LogDatabaseType()
 	previousErrorLogEnabled := constant.ErrorLogEnabled
+	previousConsumeLogEnabled, previousDataExportEnabled := common.LogConsumeEnabled, common.DataExportEnabled
 
 	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
@@ -37,18 +38,21 @@ func TestProcessChannelErrorUsesSnapshotWithoutLeakingChannelMetadata(t *testing
 	common.RedisEnabled = false
 	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
 	constant.ErrorLogEnabled = true
+	common.LogConsumeEnabled, common.DataExportEnabled = true, false
 	t.Cleanup(func() {
 		model.DB, model.LOG_DB = previousDB, previousLogDB
 		common.RedisEnabled = previousRedisEnabled
 		common.SetDatabaseTypes(previousMainDatabaseType, previousLogDatabaseType)
 		constant.ErrorLogEnabled = previousErrorLogEnabled
+		common.LogConsumeEnabled, common.DataExportEnabled = previousConsumeLogEnabled, previousDataExportEnabled
 		require.NoError(t, sqlDB.Close())
 	})
 
-	require.NoError(t, database.Create(&model.User{Id: 7, Username: "log-owner", Group: "default"}).Error)
+	require.NoError(t, database.Create(&model.User{Id: 7, Username: "log-owner", Group: "default", Setting: `{"record_ip_log":false}`}).Error)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	ctx.Request.RemoteAddr = "203.0.113.8:4242"
 	ctx.Set("id", 7)
 	ctx.Set("username", "log-owner")
 	ctx.Set("token_name", "test-token")
@@ -74,6 +78,7 @@ func TestProcessChannelErrorUsesSnapshotWithoutLeakingChannelMetadata(t *testing
 	var stored model.Log
 	require.NoError(t, database.First(&stored).Error)
 	assert.Equal(t, channelSnapshot.ChannelId, stored.ChannelId)
+	assert.Equal(t, "203.0.113.8", stored.Ip)
 	storedOther, err := common.StrToMap(stored.Other)
 	require.NoError(t, err)
 	assert.Equal(t, float64(http.StatusBadGateway), storedOther["status_code"])
@@ -96,4 +101,9 @@ func TestProcessChannelErrorUsesSnapshotWithoutLeakingChannelMetadata(t *testing
 	for _, key := range []string{"channel_id", "channel_name", "channel_type"} {
 		assert.NotContains(t, userOther, key)
 	}
+
+	model.RecordConsumeLog(ctx, 7, model.RecordConsumeLogParams{ModelName: "gpt-test", Other: model.NewLogOther()})
+	var consumeLog model.Log
+	require.NoError(t, database.Where("type = ?", model.LogTypeConsume).First(&consumeLog).Error)
+	assert.Equal(t, "203.0.113.8", consumeLog.Ip)
 }
