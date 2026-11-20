@@ -244,7 +244,11 @@ func formatLogOtherJSON(value string, visibility logOtherVisibility) string {
 
 	changed := false
 	if visibility == logOtherVisibilityUser {
-		for _, key := range []string{logOtherAdminInfoKey, logOtherRootInfoKey, logOtherAuditInfoKey} {
+		for _, key := range []string{
+			logOtherAdminInfoKey, logOtherRootInfoKey, logOtherAuditInfoKey,
+			"response_model", "upstream_model_name", "is_model_mapped",
+			"po", // Parameter override audit lines can include model names.
+		} {
 			if _, exists := values[key]; exists {
 				delete(values, key)
 				changed = true

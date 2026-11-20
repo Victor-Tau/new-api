@@ -50,13 +50,26 @@ func exportedRequestIds(lines []map[string]any) []any {
 	return ids
 }
 
+const logOtherWithModelRouting = `{
+	"model_price": 0.01,
+	"is_model_mapped": true,
+	"upstream_model_name": "private-upstream",
+	"response_model": {
+		"requested_model": "gpt-a",
+		"upstream_model": "private-upstream",
+		"returned_model": "private-revision"
+	},
+	"po": ["set model = private-upstream"],
+	"admin_info": {"use_channel": ["9"]}
+}`
+
 // seedExportLogs stores logs of two users: three in the last hour and one
 // from 400 days ago.
 func seedExportLogs(t *testing.T, mainDB *gorm.DB, logDB *gorm.DB, now int64) {
 	t.Helper()
 	require.NoError(t, mainDB.Create(&model.Channel{Id: 9, Name: "primary"}).Error)
 	logs := []model.Log{
-		{UserId: 1, Username: "alice", CreatedAt: now - 3600, Type: model.LogTypeConsume, ModelName: "gpt-a", ChannelId: 9, Quota: 10, RequestId: "a-1", Other: `{"admin_info":{"use_channel":["9"]}}`},
+		{UserId: 1, Username: "alice", CreatedAt: now - 3600, Type: model.LogTypeConsume, ModelName: "gpt-a", TokenId: 11, ChannelId: 9, Quota: 10, RequestId: "a-1", Other: logOtherWithModelRouting},
 		{UserId: 2, Username: "bob", CreatedAt: now - 1800, Type: model.LogTypeConsume, ModelName: "gpt-b", ChannelId: 9, Quota: 20, RequestId: "b-1"},
 		{UserId: 1, Username: "alice", CreatedAt: now - 60, Type: model.LogTypeError, ModelName: "gpt-a", RequestId: "a-2"},
 		{UserId: 1, Username: "alice", CreatedAt: now - 400*24*3600, Type: model.LogTypeConsume, ModelName: "gpt-a", RequestId: "a-old"},
@@ -127,10 +140,32 @@ func TestLogExportDatabaseMatrix(t *testing.T) {
 
 			listed := callLogHandler(t, GetUserLogs, 1, common.RoleCommonUser, query)[0]
 			require.Equal(t, true, listed["success"])
-			assert.EqualValues(t, 2, listed["data"].(map[string]any)["total"])
+			listData := listed["data"].(map[string]any)
+			assert.EqualValues(t, 2, listData["total"])
+			userItems := listData["items"].([]any)
+			require.Len(t, userItems, 2)
+			userItem := userItems[1].(map[string]any)
+			assert.Equal(t, "gpt-a", userItem["model_name"])
+			assert.JSONEq(t, `{"model_price":0.01}`, userItem["other"].(string))
+
+			tokenResult := callLogHandler(t, func(c *gin.Context) {
+				c.Set("token_id", 11)
+				GetLogByKey(c)
+			}, 1, common.RoleCommonUser, "")[0]
+			require.Equal(t, true, tokenResult["success"])
+			tokenItems := tokenResult["data"].([]any)
+			require.Len(t, tokenItems, 1)
+			tokenItem := tokenItems[0].(map[string]any)
+			assert.Equal(t, "gpt-a", tokenItem["model_name"])
+			assert.JSONEq(t, `{"model_price":0.01}`, tokenItem["other"].(string))
+
 			listed = callLogHandler(t, GetAllLogs, 3, common.RoleAdminUser, query+"&username=alice")[0]
 			require.Equal(t, true, listed["success"])
-			assert.EqualValues(t, 2, listed["data"].(map[string]any)["total"])
+			listData = listed["data"].(map[string]any)
+			assert.EqualValues(t, 2, listData["total"])
+			adminItems := listData["items"].([]any)
+			require.Len(t, adminItems, 2)
+			assert.JSONEq(t, logOtherWithModelRouting, adminItems[1].(map[string]any)["other"].(string))
 
 			own := callLogHandler(t, ExportUserLogs, 1, common.RoleCommonUser, query)
 			require.Len(t, own, 3)
@@ -138,13 +173,14 @@ func TestLogExportDatabaseMatrix(t *testing.T) {
 			assert.Equal(t, map[string]any{"success": true, "message": "", "data": map[string]any{"count": float64(2)}}, own[2])
 			assert.Equal(t, float64(1), own[0]["id"], "user exports carry list positions, not row ids")
 			assert.Empty(t, own[1]["channel_name"])
-			assert.NotContains(t, own[1]["other"], "admin_info")
+			assert.Equal(t, "gpt-a", own[1]["model_name"])
+			assert.JSONEq(t, `{"model_price":0.01}`, own[1]["other"].(string))
 
 			all := callLogHandler(t, ExportAllLogs, 3, common.RoleAdminUser, query+"&model_name=gpt-%25")
 			require.Len(t, all, 4)
 			assert.Equal(t, []any{"a-2", "b-1", "a-1"}, exportedRequestIds(all))
 			assert.Equal(t, "primary", all[2]["channel_name"])
-			assert.Contains(t, all[2]["other"], "admin_info")
+			assert.JSONEq(t, logOtherWithModelRouting, all[2]["other"].(string))
 			assert.Equal(t, true, all[3]["success"])
 		})
 	}
