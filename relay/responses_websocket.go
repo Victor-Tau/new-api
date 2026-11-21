@@ -36,7 +36,12 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const responsesWSEventTypeResponseCreate = "response.create"
+const (
+	responsesWSEventTypeResponseCreate = "response.create"
+	responsesWSEventTypeInterrupt      = "response.interrupt"
+	responsesWSEventInterruptAccepted  = "response.interrupt.accepted"
+	responsesWSEventInterruptFailed    = "response.interrupt.failed"
+)
 const responsesWSWriteTimeout = 30 * time.Second
 
 // ResponsesWSRequestRunner executes the existing authentication and rate-limit
@@ -74,11 +79,11 @@ type responsesWSMessage struct {
 	err  error
 }
 
-// responsesWSControl is a client control event (response.cancel) whose
-// envelope the read loop already parsed.
+// responsesWSControl is a client control event whose envelope the read loop parsed.
 type responsesWSControl struct {
-	body              []byte
-	eventID, streamID string
+	body                []byte
+	eventID, streamID   string
+	interruptResponseID string
 }
 
 // Only the request worker reads or changes billing state. Socket readers pass
@@ -88,6 +93,11 @@ type responsesWSCallState struct {
 	controls chan responsesWSControl
 	done     chan struct{}
 	terminal *responsesWSMessage
+	streamID string
+	// responseID is published under stateMu before the client sees response.created.
+	responseID string
+	// interruptQueued is owned by the client read loop.
+	interruptQueued bool
 	// A nonzero closeCode ends the connection after this request.
 	closeCode   int
 	closeReason string
@@ -160,24 +170,50 @@ func ResponsesWebSocketHelper(c *gin.Context, client *websocket.Conn, runner Res
 			continue
 		}
 		if eventType != responsesWSEventTypeResponseCreate {
-			// Controls are owned by the active request too. In particular a cancel
-			// arriving during authentication must not precede its upstream create.
 			state := s.getCurrent()
-			if eventType != "response.cancel" || state == nil {
+			control := responsesWSControl{body: message, eventID: envelope.EventID, streamID: streamID}
+			if eventType == responsesWSEventTypeInterrupt {
+				var interrupt struct {
+					ResponseID string `json:"response_id"`
+					Mode       string `json:"mode"`
+				}
+				if err := common.Unmarshal(message, &interrupt); err != nil || strings.TrimSpace(interrupt.ResponseID) == "" || interrupt.Mode != "discard_partial_items" {
+					s.sendError(envelope.EventID, streamID, newResponsesWSInvalidRequestError(errors.New("response.interrupt requires a response_id and mode discard_partial_items")))
+					continue
+				}
+				// A late interrupt cannot affect an idle connection or a newer response.
+				s.stateMu.Lock()
+				ownsResponse := state != nil && state == s.current && state.responseID == interrupt.ResponseID && state.streamID == streamID
+				s.stateMu.Unlock()
+				if !ownsResponse || state.interruptQueued {
+					continue
+				}
+				control.interruptResponseID = interrupt.ResponseID
+			} else if eventType != "response.cancel" || state == nil {
 				s.sendError(envelope.EventID, streamID, newResponsesWSInvalidRequestError(fmt.Errorf("unsupported websocket event %q", eventType)))
 				continue
 			}
 			select {
-			case state.controls <- responsesWSControl{body: message, eventID: envelope.EventID, streamID: streamID}:
+			case state.controls <- control:
+				if control.interruptResponseID != "" {
+					state.interruptQueued = true
+				}
 			case <-state.done:
 			case <-s.ctx.Done():
 				return nil
 			default:
-				s.sendError(envelope.EventID, streamID, newResponsesWSInvalidRequestError(errors.New("a response control event is already pending")))
+				if control.interruptResponseID == "" {
+					s.sendError(envelope.EventID, streamID, newResponsesWSInvalidRequestError(errors.New("a response control event is already pending")))
+				}
 			}
 			continue
 		}
-		state := &responsesWSCallState{inbox: make(chan responsesWSMessage), controls: make(chan responsesWSControl, 1), done: make(chan struct{})}
+		state := &responsesWSCallState{
+			inbox:    make(chan responsesWSMessage),
+			controls: make(chan responsesWSControl, 1),
+			done:     make(chan struct{}),
+			streamID: streamID,
+		}
 		if !s.tryReserveCurrent(state) {
 			s.sendError(envelope.EventID, streamID, types.NewErrorWithStatusCode(errors.New("another response.create is already in progress on this websocket connection"), types.ErrorCodeInvalidRequest, http.StatusConflict, types.ErrOptionWithSkipRetry()))
 			continue
@@ -458,6 +494,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 	accepted := false
 	var pendingControl []byte
 	var sentControl []byte
+	awaitingInterruptAck := false
 	// cancelled is set once the response.cancel of a stop went upstream.
 	cancelled := false
 	for {
@@ -474,11 +511,22 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 			info.SetFirstResponseTime()
 			var event struct {
 				dto.ResponsesStreamResponse
-				StreamID string `json:"stream_id"`
+				StreamID   string `json:"stream_id"`
+				ResponseID string `json:"response_id"`
 			}
 			if err := common.Unmarshal(incoming.body, &event); err != nil {
 				info.StreamStatus.RecordError("invalid upstream websocket event")
 			} else {
+				interruptAck := event.Type == responsesWSEventInterruptAccepted || event.Type == responsesWSEventInterruptFailed
+				if interruptAck {
+					if !awaitingInterruptAck || event.ResponseID != responseID || event.StreamID != "" && event.StreamID != create.StreamID {
+						continue
+					}
+					awaitingInterruptAck = false
+					if event.Type == responsesWSEventInterruptFailed {
+						sentControl = nil
+					}
+				}
 				if event.Type != "error" && event.StreamID != "" && event.StreamID != create.StreamID {
 					if err := s.writeClient(incoming.kind, incoming.body); err != nil {
 						s.shutdown(websocket.CloseInternalServerErr, "")
@@ -498,19 +546,15 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 					}
 					terminal, ambiguous, controlError := responsesWSErrorEndsRequest(rejection, create.StreamID, responseID, sentControl)
 					if !terminal {
-						// A stopped response sends nothing more before its error.
-						if stopErr != nil {
-							if controlError {
-								sentControl = nil
-							}
-							continue
-						}
-						if err := s.writeClient(incoming.kind, incoming.body); err != nil {
-							s.shutdown(websocket.CloseInternalServerErr, "")
-						}
-						// Only a control error in this stream resolves its pending control.
 						if controlError {
 							sentControl = nil
+							awaitingInterruptAck = false
+						}
+						// A stopped response sends nothing more before its error.
+						if stopErr == nil {
+							if err := s.writeClient(incoming.kind, incoming.body); err != nil {
+								s.shutdown(websocket.CloseInternalServerErr, "")
+							}
 						}
 						continue
 					}
@@ -543,7 +587,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 					}
 					return rejected
 				}
-				if strings.HasPrefix(event.Type, "response.") {
+				if !interruptAck && strings.HasPrefix(event.Type, "response.") {
 					if !accepted {
 						// Like HTTP, bind the session only once upstream accepted the request.
 						service.RecordChannelAffinity(c, s.lockedChannelID)
@@ -551,6 +595,11 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 					accepted = true
 					if event.Response != nil && event.Response.ID != "" {
 						responseID = event.Response.ID
+						if event.Type == "response.created" {
+							s.stateMu.Lock()
+							state.responseID = responseID
+							s.stateMu.Unlock()
+						}
 					}
 				}
 				accumulator.Observe(&event.ResponsesStreamResponse, incoming.body)
@@ -603,7 +652,12 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				continue
 			}
 			if pendingControl != nil || sentControl != nil {
-				s.sendError(control.eventID, control.streamID, newResponsesWSInvalidRequestError(errors.New("a response control event is already pending")))
+				if control.interruptResponseID == "" {
+					s.sendError(control.eventID, control.streamID, newResponsesWSInvalidRequestError(errors.New("a response control event is already pending")))
+				}
+				continue
+			}
+			if control.interruptResponseID != "" && control.interruptResponseID != responseID {
 				continue
 			}
 			if !accepted {
@@ -614,6 +668,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 				s.shutdown(websocket.CloseInternalServerErr, "")
 			}
 			sentControl = control.body
+			awaitingInterruptAck = control.interruptResponseID != ""
 		case <-idle.C:
 			finishSocket()
 			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonTimeout, context.DeadlineExceeded)
