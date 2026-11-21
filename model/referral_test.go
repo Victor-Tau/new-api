@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -89,10 +90,11 @@ func TestReferralDatabaseMatrix(t *testing.T) {
 				require.NoError(t, DB.Raw(versionQuery).Scan(&version).Error)
 				t.Logf("database version: %s", version)
 
+				var legacyTopUp TopUp
+				var legacyInvitee User
 				if mode == "UPGRADE" {
 					require.True(t, DB.Migrator().HasTable(&User{}))
-					require.False(t, DB.Migrator().HasColumn(&ReferralRebate{}, "AvailableAt"))
-					require.False(t, DB.Migrator().HasTable(&InvitationReward{}))
+					require.False(t, DB.Migrator().HasColumn(&ReferralRebate{}, "RedemptionId"))
 					require.NoError(t, DB.Table("users").Create(map[string]any{
 						"username": "referral-legacy", "password": "", "aff_code": "legacy-ref",
 						"quota": 12345, "aff_quota": 7500, "aff_history": 9000, "aff_count": 3,
@@ -101,6 +103,29 @@ func TestReferralDatabaseMatrix(t *testing.T) {
 						"username": "referral-legacy-full", "password": "", "aff_code": "legacy-full",
 						"quota": common.MaxWalletQuota, "aff_quota": 8000, "aff_history": 9000, "aff_count": 3,
 					}).Error)
+					if DB.Migrator().HasTable(&ReferralRebate{}) {
+						var legacy User
+						require.NoError(t, DB.Select("id").First(&legacy, "username = ?", "referral-legacy").Error)
+						now := common.GetTimestamp()
+						legacyTopUp = TopUp{UserId: legacy.Id, TradeNo: "legacy-paid", Status: common.TopUpStatusSuccess, CompleteTime: now}
+						require.NoError(t, legacyTopUp.Insert())
+						require.NoError(t, DB.Table("referral_rebates").Create(map[string]any{
+							"top_up_id": legacyTopUp.Id, "inviter_id": legacy.Id, "invitee_username": "legacy-invitee",
+							"paid_amount": "12.50", "paid_currency": "USD", "rate": 1000, "quota": 625000,
+							"created_at": now, "credited_at": now,
+						}).Error)
+					}
+					if DB.Migrator().HasTable(&InvitationReward{}) {
+						require.False(t, DB.Migrator().HasColumn(&InvitationReward{}, "LogPending"))
+						var legacy User
+						require.NoError(t, DB.Select("id").First(&legacy, "username = ?", "referral-legacy").Error)
+						legacyInvitee = User{Username: "legacy-reward-invitee", AffCode: "legacy-invitee", InviterId: legacy.Id}
+						require.NoError(t, DB.Create(&legacyInvitee).Error)
+						require.NoError(t, DB.Table("invitation_rewards").Create(map[string]any{
+							"invitee_id": legacyInvitee.Id, "inviter_id": legacy.Id, "quota": 7500,
+							"available_at": legacyInvitee.CreatedAt + 3600,
+						}).Error)
+					}
 				} else {
 					require.False(t, DB.Migrator().HasTable(&User{}))
 				}
@@ -123,6 +148,31 @@ func TestReferralDatabaseMatrix(t *testing.T) {
 					require.NoError(t, err)
 					assert.Equal(t, legacy.Id, id)
 					assert.Error(t, DB.Create(&User{Username: legacy.Username, AffCode: "duplicate-name"}).Error)
+					if legacyTopUp.Id != 0 {
+						var rebate ReferralRebate
+						require.NoError(t, DB.First(&rebate, "top_up_id = ?", legacyTopUp.Id).Error)
+						assert.Nil(t, rebate.RedemptionId)
+						assert.Zero(t, rebate.RedemptionQuota)
+						assert.Equal(t, "12.50", rebate.PaidAmount)
+						assert.Equal(t, "USD", rebate.PaidCurrency)
+						assert.Equal(t, 625000, rebate.Quota)
+						assert.Equal(t, legacyTopUp.CompleteTime, rebate.CreditedAt)
+						rebate.Id = 0
+						assert.Error(t, DB.Create(&rebate).Error)
+					}
+					if legacyInvitee.Id != 0 {
+						records, total, err := ListReferralRebates(t.Context(), legacy.Id, &common.PageInfo{Page: 1, PageSize: 10}, false, true)
+						require.NoError(t, err)
+						require.Len(t, records, 1)
+						assert.EqualValues(t, 1, total)
+						assert.Equal(t, "invitation_reward", records[0].RecordType)
+						assert.Equal(t, legacyInvitee.Username, records[0].InviteeUsername)
+						assert.Equal(t, legacyInvitee.CreatedAt, records[0].CreatedAt)
+						assert.Equal(t, legacyInvitee.CreatedAt+3600, records[0].AvailableAt)
+						assert.Equal(t, 7500, records[0].Quota)
+						assert.Zero(t, records[0].CreditedAt)
+						require.Error(t, DB.Create(&InvitationReward{InviteeId: &legacyInvitee.Id, InviterId: legacy.Id, Quota: 7500}).Error)
+					}
 
 					var full User
 					require.NoError(t, DB.Where("username = ?", "referral-legacy-full").First(&full).Error)
@@ -142,6 +192,10 @@ func TestReferralDatabaseMatrix(t *testing.T) {
 				require.Error(t, UpdateOption(ReferralDefaultRateOption, "10001"))
 				assert.Equal(t, 1000, ReferralDefaultRate())
 				exerciseReferralSettlement(t)
+				if engine.kind == common.DatabaseTypeSQLite && mode == "FRESH" {
+					t.Setenv("LOG_SQL_DSN", "local")
+					require.NoError(t, InitLogDB())
+				}
 				exerciseInvitationRewards(t)
 			})
 		}
@@ -189,6 +243,10 @@ func exerciseInvitationRewards(t *testing.T) {
 	require.NoError(t, UpdateOption(InvitationRewardDelayOption, "0"))
 	require.NoError(t, ReconcileInvitationRewards(t.Context()))
 	assertWallet(8500, 7500, 1)
+	logs, _, err := GetUserLogs(inviter.Id, LogFilter{Type: LogTypeTopup}, 0, 10)
+	require.NoError(t, err)
+	require.Len(t, logs, 1)
+	assert.Contains(t, logs[0].Content, "Bonus for inviting a user")
 
 	topUp := TopUp{
 		UserId: delayed.Id, Amount: 20, Money: 90, TradeNo: "reward-delayed-rebate",
@@ -196,11 +254,22 @@ func exerciseInvitationRewards(t *testing.T) {
 	}
 	require.NoError(t, topUp.Insert())
 	payment := ParseWalletTopUpPayment("10", "USD")
-	_, err := RechargeEpay(topUp.TradeNo, "alipay", "", payment)
+	_, err = RechargeEpay(topUp.TradeNo, "alipay", "", payment)
 	require.NoError(t, err)
 	var rebate ReferralRebate
 	require.NoError(t, DB.Where("top_up_id = ?", topUp.Id).First(&rebate).Error)
 	assert.Equal(t, rebate.CreatedAt+12*3600, rebate.AvailableAt)
+	records, total, err := ListReferralRebates(t.Context(), inviter.Id, &common.PageInfo{Page: 1, PageSize: 10}, true, true)
+	require.NoError(t, err)
+	assert.EqualValues(t, 3, total)
+	require.Len(t, records, 3)
+	assert.Contains(t, records, ReferralRebateRecord{
+		RecordType: "invitation_reward",
+		ReferralRebate: ReferralRebate{
+			Id: reward.Id, InviteeUsername: delayed.Username, PaidAmount: "0", PaidCurrency: "USD",
+			Quota: 7500, CreatedAt: delayed.CreatedAt, AvailableAt: reward.AvailableAt,
+		},
+	})
 	require.NoError(t, ReconcileReferralRebates(t.Context()))
 	assertWallet(8500, 7500, 1)
 
@@ -212,14 +281,22 @@ func exerciseInvitationRewards(t *testing.T) {
 		require.NoError(t, ReconcileReferralRebates(t.Context()))
 	}
 	assertWallet(16000+rebate.Quota, 15000, 2)
-	logs, _, err := GetUserLogs(inviter.Id, LogFilter{Type: LogTypeSystem}, 0, 10)
+	logs, _, err = GetUserLogs(inviter.Id, LogFilter{Type: LogTypeSystem}, 0, 10)
 	require.NoError(t, err)
-	require.Len(t, logs, 2)
-	assert.Contains(t, logs[0].Content, "Bonus for inviting a user")
+	assert.Empty(t, logs)
 	logs, _, err = GetUserLogs(inviter.Id, LogFilter{Type: LogTypeTopup}, 0, 10)
 	require.NoError(t, err)
-	require.Len(t, logs, 1)
-	assert.Contains(t, logs[0].Content, "Referral rebate / Invited user reward-delayed")
+	require.Len(t, logs, 3)
+	invitationLogs := 0
+	for _, log := range logs {
+		if strings.Contains(log.Content, "Bonus for inviting a user") {
+			invitationLogs++
+			assert.Contains(t, log.Other, `"invitation_reward_quota":7500`)
+			continue
+		}
+		assert.Contains(t, log.Content, "Referral rebate / Invited user reward-delayed")
+	}
+	assert.Equal(t, 2, invitationLogs)
 }
 
 func exerciseReferralSettlement(t *testing.T) {
@@ -270,20 +347,20 @@ func exerciseReferralSettlement(t *testing.T) {
 	assert.Equal(t, expected, stored.Quota)
 	assert.Zero(t, stored.AffQuota)
 
-	records, total, err := ListReferralRebates(t.Context(), inviter.Id, page)
+	records, total, err := ListReferralRebates(t.Context(), inviter.Id, page, true, true)
 	require.NoError(t, err)
 	require.Len(t, records, 1)
 	assert.Equal(t, int64(1), total)
-	assert.Equal(t, first.Id, records[0].TopUpId)
+	assert.Equal(t, &first.Id, records[0].TopUpId)
 	assert.Equal(t, "73", records[0].PaidAmount)
 	assert.Equal(t, "CNY", records[0].PaidCurrency)
 	assert.Equal(t, 1000, records[0].Rate)
 	assert.Equal(t, expected, records[0].Quota)
 	assert.Positive(t, records[0].CreditedAt)
-	copy := records[0]
+	copy := records[0].ReferralRebate
 	copy.Id = 0
 	assert.Error(t, DB.Create(&copy).Error)
-	_, total, err = ListReferralRebates(t.Context(), other.Id, page)
+	_, total, err = ListReferralRebates(t.Context(), other.Id, page, true, true)
 	require.NoError(t, err)
 	assert.Zero(t, total)
 
@@ -315,7 +392,7 @@ func exerciseReferralSettlement(t *testing.T) {
 	_, total, err = GetUserLogs(inviter.Id, LogFilter{Type: LogTypeTopup}, 0, 10)
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), total)
-	_, total, err = ListReferralRebates(t.Context(), inviter.Id, page)
+	_, total, err = ListReferralRebates(t.Context(), inviter.Id, page, true, true)
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), total)
 	require.NoError(t, DB.Model(&inviter).UpdateColumn("referral_rebate_enabled", true).Error)
@@ -331,4 +408,44 @@ func exerciseReferralSettlement(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 23*expected, stored.Quota)
 
+	code := Redemption{Id: first.Id, Key: "first-referral-redemption", Quota: 4_000_003}
+	require.NoError(t, code.Insert())
+	quota, err := Redeem(code.Key, buyer.Id)
+	require.NoError(t, err)
+	assert.Equal(t, code.Quota, quota)
+	_, err = Redeem(code.Key, buyer.Id)
+	require.ErrorIs(t, err, ErrRedeemFailed)
+
+	var redeemed ReferralRebate
+	require.NoError(t, DB.First(&redeemed, "redemption_id = ?", code.Id).Error)
+	assert.Nil(t, redeemed.TopUpId)
+	assert.Equal(t, code.Quota, redeemed.RedemptionQuota)
+	assert.Empty(t, redeemed.PaidAmount)
+	assert.Empty(t, redeemed.PaidCurrency)
+	assert.Equal(t, 800_001, redeemed.Quota)
+	assert.Positive(t, redeemed.CreditedAt)
+	duplicate := redeemed
+	duplicate.Id = 0
+	assert.Error(t, DB.Create(&duplicate).Error)
+
+	require.NoError(t, UpdateOption(ReferralRebateDelayOption, "2"))
+	delayed := Redemption{Id: code.Id + 1, Key: "second-referral-redemption", Quota: 2_500_000}
+	require.NoError(t, delayed.Insert())
+	_, err = Redeem(delayed.Key, buyer.Id)
+	require.NoError(t, err)
+	var delayedRebate ReferralRebate
+	require.NoError(t, DB.First(&delayedRebate, "redemption_id = ?", delayed.Id).Error)
+	assert.Zero(t, delayedRebate.CreditedAt)
+	assert.Equal(t, delayedRebate.CreatedAt+2*3600, delayedRebate.AvailableAt)
+	require.NoError(t, DB.First(stored, inviter.Id).Error)
+	assert.Equal(t, 23*expected+800_001, stored.Quota)
+	require.NoError(t, DB.Model(&delayedRebate).UpdateColumn("available_at", common.GetTimestamp()).Error)
+	for range 2 {
+		require.NoError(t, ReconcileReferralRebates(t.Context()))
+	}
+	require.NoError(t, DB.First(stored, inviter.Id).Error)
+	assert.Equal(t, 23*expected+800_001+500_000, stored.Quota)
+	_, total, err = GetUserLogs(inviter.Id, LogFilter{Type: LogTypeTopup}, 0, 10)
+	require.NoError(t, err)
+	assert.EqualValues(t, 5, total)
 }

@@ -117,7 +117,7 @@ type User struct {
 	AuthVersion           int64                      `json:"-" gorm:"type:bigint;not null;default:1;column:auth_version"`
 	AdminPermissions      map[string]map[string]bool `json:"admin_permissions,omitempty" gorm:"-:all"`
 
-	inviterRewardQuota int
+	inviterReward *InvitationReward
 }
 
 func (user *User) BeforeCreate(_ *gorm.DB) error {
@@ -701,9 +701,9 @@ func (user *User) Insert(inviterId int) error {
 
 func (user *User) FinishInsert() {
 	inviterId := user.InviterId
-	if reward := user.inviterRewardQuota; reward > 0 {
-		user.inviterRewardQuota = 0
-		afterInvitationRewardCredit(inviterId, reward)
+	if reward := user.inviterReward; reward != nil {
+		user.inviterReward = nil
+		reward.afterCredit()
 	}
 	// 用户创建成功后，根据角色初始化边栏配置
 	// 需要重新获取用户以确保有正确的ID和Role
@@ -734,7 +734,7 @@ func (user *User) FinishInsert() {
 // This is used for OAuth registration where user creation and binding need to be atomic.
 // The inviter's wallet credit commits with the new account. FinishInsert publishes the cache update and logs.
 func (user *User) InsertWithTx(tx *gorm.DB, inviterId int) error {
-	user.inviterRewardQuota = 0
+	user.inviterReward = nil
 	return withNormalizedEmailLock(tx, user.Email, func(tx *gorm.DB) error {
 		if err := user.prepareForInsert(tx); err != nil {
 			return err
@@ -787,11 +787,17 @@ func (user *User) InsertWithTx(tx *gorm.DB, inviterId int) error {
 				return err
 			}
 			if credited {
-				user.inviterRewardQuota = reward
-				return nil
+				entry.CreditedAt = common.GetTimestamp()
+				entry.LogPending = true
 			}
 		}
-		return tx.Create(&entry).Error
+		if err := tx.Create(&entry).Error; err != nil {
+			return err
+		}
+		if entry.CreditedAt != 0 {
+			user.inviterReward = &entry
+		}
+		return nil
 	})
 }
 

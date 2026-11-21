@@ -211,11 +211,15 @@ export function ReferralSettingsSection(props: {
                 min={0}
                 step={1}
                 required
+                aria-describedby='rebate-delay-hours-description'
                 {...registerDelay('rebateDelayHours')}
               />
-              <p className='text-muted-foreground text-sm'>
+              <p
+                id='rebate-delay-hours-description'
+                className='text-muted-foreground text-sm'
+              >
                 {t(
-                  'Counted from payment confirmation. Enter 0 for immediate credit.'
+                  'Counted from payment confirmation or code redemption. Enter 0 for immediate credit.'
                 )}
               </p>
             </div>

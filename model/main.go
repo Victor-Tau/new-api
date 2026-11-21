@@ -233,7 +233,9 @@ func InitDB() (err error) {
 }
 
 func InitLogDB() (err error) {
-	if os.Getenv("LOG_SQL_DSN") == "" {
+	logDSN := os.Getenv("LOG_SQL_DSN")
+	// A local log DSN uses the same SQLite path as the main database.
+	if logDSN == "" || (common.UsingMainDatabase(common.DatabaseTypeSQLite) && strings.HasPrefix(logDSN, "local")) {
 		LOG_DB = DB
 		common.SetLogDatabaseType(common.MainDatabaseType())
 		initCol()

@@ -66,17 +66,33 @@ export function ReferralDetails(props: ReferralDetailsProps) {
   )
   const rebateColumns = useMemo<ColumnDef<ReferralRebate>[]>(
     () => [
-      { accessorKey: 'username', header: t('Username') },
+      {
+        accessorKey: 'username',
+        header: t('Username'),
+        cell: ({ row }) => row.original.username || '—',
+      },
+      {
+        accessorKey: 'record_type',
+        header: t('Type'),
+        cell: ({ row }) =>
+          row.original.record_type === 'invitation_reward'
+            ? t('Invitation rewards')
+            : t('Referral rebates'),
+      },
       {
         accessorKey: 'created_at',
         header: t('Date'),
         cell: ({ row }) => formatTimestamp(row.original.created_at),
       },
       {
-        id: 'paid_amount',
-        header: t('Actual payment'),
+        id: 'amount',
+        header: t('Rebate basis'),
         cell: ({ row }) => {
           const record = row.original
+          if (record.record_type === 'invitation_reward') return '—'
+          if (record.redemption_quota) {
+            return `${t('Redemption Code')} · ${formatQuotaWithCurrency(record.redemption_quota, { locale })}`
+          }
           const fractionDigits = record.paid_amount.split('.')[1]?.length ?? 0
           return new Intl.NumberFormat(locale, {
             style: 'currency',
@@ -89,11 +105,14 @@ export function ReferralDetails(props: ReferralDetailsProps) {
       {
         id: 'rate_bps',
         header: t('Rebate rate'),
-        cell: ({ row }) => formatPercent(row.original.rate_bps / 100),
+        cell: ({ row }) =>
+          row.original.record_type === 'invitation_reward'
+            ? '—'
+            : formatPercent(row.original.rate_bps / 100),
       },
       {
         id: 'rebate_quota',
-        header: t('Rebate amount'),
+        header: t('Amount'),
         cell: ({ row }) =>
           formatQuotaWithCurrency(row.original.rebate_quota, { locale }),
       },
@@ -143,22 +162,25 @@ export function ReferralDetails(props: ReferralDetailsProps) {
           </CardContent>
         </Card>
       )}
-      {props.permissions.rebate_enabled && (
+      {(props.permissions.invitation_enabled ||
+        props.permissions.rebate_enabled) && (
         <Card>
           <CardHeader>
-            <CardTitle>{t('Referral rebates')}</CardTitle>
-            <CardDescription>
-              {t('Current rebate rate: {{rate}}', {
-                rate: formatPercent((props.permissions.rate_bps ?? 0) / 100),
-              })}
-            </CardDescription>
+            <CardTitle>{t('Referral earnings')}</CardTitle>
+            {props.permissions.rebate_enabled && (
+              <CardDescription>
+                {t('Current rebate rate: {{rate}}', {
+                  rate: formatPercent((props.permissions.rate_bps ?? 0) / 100),
+                })}
+              </CardDescription>
+            )}
           </CardHeader>
           <CardContent>
             <ReferralTable
               userId={props.userId}
               resource='rebates'
               columns={rebateColumns}
-              emptyTitle={t('No rebate records yet')}
+              emptyTitle={t('No records')}
               shouldRefresh={(items) =>
                 items.some(
                   (item) =>
@@ -174,7 +196,7 @@ export function ReferralDetails(props: ReferralDetailsProps) {
   )
 }
 
-function ReferralTable<T extends { id: number }>(props: {
+function ReferralTable<T extends { id: number; record_type?: string }>(props: {
   userId: number
   resource: 'invitees' | 'rebates'
   columns: ColumnDef<T>[]
@@ -198,7 +220,7 @@ function ReferralTable<T extends { id: number }>(props: {
   const { table } = useDataTable({
     data: result.data?.items ?? [],
     columns: props.columns,
-    getRowId: (row) => String(row.id),
+    getRowId: (row) => `${row.record_type ?? props.resource}:${row.id}`,
     pagination,
     onPaginationChange: setPagination,
     manualPagination: true,

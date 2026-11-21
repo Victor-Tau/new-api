@@ -17,7 +17,7 @@ type referralPermissions struct {
 }
 
 type referralRebateResponse struct {
-	model.ReferralRebate
+	model.ReferralRebateRecord
 	RemainingSeconds int64 `json:"remaining_seconds"`
 }
 
@@ -65,12 +65,13 @@ func GetReferralRebates(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	if !user.ReferralRebateEnabled {
+	invitationsEnabled := !user.InvitationDisabled
+	if !user.ReferralRebateEnabled && !invitationsEnabled {
 		writeAccountStatusError(c, http.StatusForbidden, "Rebate access is disabled")
 		return
 	}
 	page := referralPage(c)
-	items, total, err := model.ListReferralRebates(c.Request.Context(), user.Id, page)
+	items, total, err := model.ListReferralRebates(c.Request.Context(), user.Id, page, user.ReferralRebateEnabled, invitationsEnabled)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -78,7 +79,7 @@ func GetReferralRebates(c *gin.Context) {
 	now := common.GetTimestamp()
 	rebates := make([]referralRebateResponse, 0, len(items))
 	for _, item := range items {
-		rebate := referralRebateResponse{ReferralRebate: item}
+		rebate := referralRebateResponse{ReferralRebateRecord: item}
 		if item.CreditedAt == 0 && item.Quota > 0 && !item.ExchangeRatePending && item.AvailableAt > now {
 			rebate.RemainingSeconds = item.AvailableAt - now
 		}

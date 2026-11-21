@@ -78,22 +78,38 @@ function renderReferralDetails(permissions: ReferralPermissions) {
   )
 }
 
-it('shows the invited usernames and masked email when invitation access is the only permission', async () => {
-  const request = vi.spyOn(api, 'get').mockResolvedValue({
-    data: {
-      success: true,
-      data: {
-        total: 1,
-        items: [{ id: 23, username: 'invitee', email: 'a***e@example.com' }],
-      },
-    },
+it('shows masked email and pending rewards when invitation access is the only permission', async () => {
+  const request = vi.spyOn(api, 'get').mockImplementation(async (url) => {
+    const items =
+      url === '/api/user/referral/invitees'
+        ? [{ id: 23, username: 'invitee', email: 'a***e@example.com' }]
+        : [
+            {
+              id: 23,
+              record_type: 'invitation_reward',
+              username: 'invitee',
+              paid_amount: '0',
+              paid_currency: 'USD',
+              rate_bps: 0,
+              rebate_quota: 500_000,
+              created_at: 1,
+              credited_at: 0,
+              remaining_seconds: 3600,
+            },
+          ]
+    return { data: { success: true, data: { total: items.length, items } } }
   })
   renderReferralDetails({ invitation_enabled: true, rebate_enabled: false })
   expect(await screen.findByText('a***e@example.com')).toBeVisible()
-  expect(screen.getByText('invitee')).toBeVisible()
-  expect(screen.queryByText('Referral rebates')).not.toBeInTheDocument()
+  expect(
+    await screen.findByRole('cell', { name: 'Invitation rewards' })
+  ).toBeVisible()
+  expect(screen.getByRole('cell', { name: '$1' })).toBeVisible()
+  expect(screen.getByText('Estimated credit in 1h')).toBeVisible()
+  expect(screen.queryByText(/Current rebate rate/)).not.toBeInTheDocument()
   expect(request.mock.calls.map(([url]) => url)).toEqual([
     '/api/user/referral/invitees',
+    '/api/user/referral/rebates',
   ])
 })
 
@@ -127,6 +143,34 @@ it('shows the effective rate and paid currency with rebate access alone', async 
   expect(screen.getByText('Current rebate rate: 7.5%')).toBeVisible()
   expect(screen.getByText('Credited to wallet')).toBeVisible()
   expect(screen.queryByText('Invited Users')).not.toBeInTheDocument()
+})
+
+it('shows the redemption code face value as the rebate basis', async () => {
+  vi.spyOn(api, 'get').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        total: 1,
+        items: [
+          {
+            id: 1,
+            username: 'invitee',
+            paid_amount: '',
+            paid_currency: '',
+            redemption_quota: 4_000_000,
+            rate_bps: 1000,
+            rebate_quota: 400_000,
+            created_at: 1,
+            credited_at: 2,
+          },
+        ],
+      },
+    },
+  })
+  renderReferralDetails({ invitation_enabled: false, rebate_enabled: true })
+  expect(
+    await screen.findByRole('cell', { name: 'Redemption Code · $8' })
+  ).toBeVisible()
 })
 
 it('shows the server countdown in hours and minutes and leaves due rebates pending', async () => {

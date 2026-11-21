@@ -36,7 +36,9 @@ var (
 
 type ReferralRebate struct {
 	Id                  int    `json:"id"`
-	TopUpId             int    `json:"-" gorm:"uniqueIndex"`
+	TopUpId             *int   `json:"-" gorm:"uniqueIndex"`
+	RedemptionId        *int   `json:"-" gorm:"uniqueIndex"`
+	RedemptionQuota     int    `json:"redemption_quota,omitempty"`
 	InviterId           int    `json:"-" gorm:"index"`
 	InviteeUsername     string `json:"username"`
 	PaidAmount          string `json:"paid_amount" gorm:"type:varchar(24)"`
@@ -53,10 +55,17 @@ type ReferralRebate struct {
 type InvitationReward struct {
 	Id          int
 	InviteeId   *int `gorm:"uniqueIndex"` // Nil for rewards already counted on a pre-upgrade wallet.
-	InviterId   int
-	Quota       int   `gorm:"type:bigint"`
+	InviterId   int  `gorm:"index"`
+	Quota       int  `gorm:"type:bigint"`
+	CreatedAt   int64
 	AvailableAt int64 `gorm:"index:idx_invitation_reward_credit,priority:2"`
 	CreditedAt  int64 `gorm:"not null;default:0;index:idx_invitation_reward_credit,priority:1"`
+	LogPending  bool  `gorm:"index"`
+}
+
+type ReferralRebateRecord struct {
+	ReferralRebate
+	RecordType string `json:"record_type"`
 }
 
 type ReferralInvitee struct {
@@ -172,14 +181,32 @@ func ListReferralInvitees(ctx context.Context, inviterId int, page *common.PageI
 	return items, total, nil
 }
 
-func ListReferralRebates(ctx context.Context, inviterId int, page *common.PageInfo) ([]ReferralRebate, int64, error) {
-	items := make([]ReferralRebate, 0)
-	query := DB.WithContext(ctx).Model(&ReferralRebate{}).Where("inviter_id = ?", inviterId)
+func ListReferralRebates(ctx context.Context, inviterId int, page *common.PageInfo, rebatesEnabled, invitationsEnabled bool) ([]ReferralRebateRecord, int64, error) {
+	items := make([]ReferralRebateRecord, 0)
+	db := DB.WithContext(ctx)
+	rebates := db.Model(&ReferralRebate{}).Where("inviter_id = ?", inviterId).
+		Select(`'topup_rebate' AS record_type, id, top_up_id, redemption_id, redemption_quota,
+			invitee_username, paid_amount, paid_currency, rate, quota, created_at, available_at,
+			credited_at, exchange_rate_pending`)
+	rewards := db.Model(&InvitationReward{}).Where("invitation_rewards.inviter_id = ?", inviterId).
+		Joins("LEFT JOIN users AS invitee ON invitee.id = invitation_rewards.invitee_id AND invitee.deleted_at IS NULL").
+		Select(`'invitation_reward' AS record_type, invitation_rewards.id, NULL AS top_up_id,
+			NULL AS redemption_id, 0 AS redemption_quota, COALESCE(invitee.username, '') AS invitee_username,
+			'0' AS paid_amount, 'USD' AS paid_currency, 0 AS rate, invitation_rewards.quota,
+			COALESCE(NULLIF(invitation_rewards.created_at, 0), NULLIF(invitee.created_at, 0), invitation_rewards.available_at) AS created_at,
+			invitation_rewards.available_at, invitation_rewards.credited_at, FALSE AS exchange_rate_pending`)
+	if !rebatesEnabled {
+		rebates = rebates.Where("1 = 0")
+	}
+	if !invitationsEnabled {
+		rewards = rewards.Where("1 = 0")
+	}
+	query := db.Table("(? UNION ALL ?) AS referral_records", rebates, rewards)
 	var total int64
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
-	err := query.Order("id DESC").Offset(page.GetStartIdx()).Limit(page.GetPageSize()).Find(&items).Error
+	err := query.Order("created_at DESC, id DESC, record_type").Offset(page.GetStartIdx()).Limit(page.GetPageSize()).Find(&items).Error
 	return items, total, err
 }
 
@@ -187,18 +214,22 @@ func creditPaidTopUp(tx *gorm.DB, topUp *TopUp, quota int, updates map[string]an
 	if err := creditTopUpQuota(tx, topUp.UserId, quota, updates, growthTopup, topUp.TradeNo, topUp.CompleteTime); err != nil {
 		return err
 	}
-	if len(payment) == 0 {
+	if len(payment) == 0 || !payment[0].Amount.IsPositive() {
 		return nil
 	}
-	return settleReferralRebate(tx, topUp, payment[0], rebate)
+	*rebate = ReferralRebate{
+		TopUpId: &topUp.Id, CreatedAt: topUp.CompleteTime,
+		PaidAmount: payment[0].Amount.String(), PaidCurrency: payment[0].Currency,
+	}
+	return settleReferralRebate(tx, topUp.UserId, payment[0].Amount, rebate)
 }
 
-func settleReferralRebate(tx *gorm.DB, topUp *TopUp, payment WalletTopUpPayment, rebate *ReferralRebate) error {
-	if !payment.Amount.IsPositive() || !operation_setting.IsPaymentComplianceConfirmed() {
+func settleReferralRebate(tx *gorm.DB, inviteeId int, paidAmount decimal.Decimal, rebate *ReferralRebate) error {
+	if !operation_setting.IsPaymentComplianceConfirmed() {
 		return nil
 	}
 	var invitee User
-	if err := tx.Select("id", "username", "inviter_id").First(&invitee, topUp.UserId).Error; err != nil {
+	if err := tx.Select("id", "username", "inviter_id").First(&invitee, inviteeId).Error; err != nil {
 		return err
 	}
 	if invitee.InviterId == 0 || invitee.InviterId == invitee.Id {
@@ -218,18 +249,22 @@ func settleReferralRebate(tx *gorm.DB, topUp *TopUp, payment WalletTopUpPayment,
 	common.OptionMapRWMutex.RLock()
 	delay, _ := parseReferralDelay(common.OptionMap[ReferralRebateDelayOption])
 	common.OptionMapRWMutex.RUnlock()
-	*rebate = ReferralRebate{
-		TopUpId: topUp.Id, InviterId: inviter.Id, InviteeUsername: invitee.Username,
-		PaidAmount: payment.Amount.String(), PaidCurrency: payment.Currency,
-		Rate: rate, CreatedAt: topUp.CompleteTime,
-		AvailableAt: topUp.CompleteTime + delay,
-	}
-	if rate > 0 {
-		unitsPerDollar := referralExchangeRates()[payment.Currency]
+	rebate.InviterId = inviter.Id
+	rebate.InviteeUsername = invitee.Username
+	rebate.Rate = rate
+	rebate.AvailableAt = rebate.CreatedAt + delay
+	if rebate.RedemptionId != nil {
+		quota := decimal.NewFromInt(int64(rebate.RedemptionQuota)).Mul(decimal.NewFromInt(int64(rate))).Shift(-4)
+		rebate.Quota, err = common.WalletQuotaFromDecimalStrict(quota)
+		if err != nil {
+			return err
+		}
+	} else if rate > 0 {
+		unitsPerDollar := referralExchangeRates()[rebate.PaidCurrency]
 		if unitsPerDollar.IsPositive() {
-			rebate.Quota, err = rebate.calculateQuota(payment.Amount, unitsPerDollar)
+			rebate.Quota, err = rebate.calculateQuota(paidAmount, unitsPerDollar)
 			if err != nil {
-				common.SysError(fmt.Sprintf("referral rebate unavailable for top-up %d: %v", topUp.Id, err))
+				common.SysError(fmt.Sprintf("referral rebate unavailable for top-up %d: %v", *rebate.TopUpId, err))
 			}
 		} else {
 			rebate.ExchangeRatePending = true
@@ -295,49 +330,49 @@ func (rebate *ReferralRebate) afterCredit() {
 	}
 }
 
-// The ledger owns the credit and the pending log. Locking it also serializes
-// log delivery across instances when the log store uses a separate connection.
 func publishReferralRebateLog(ctx context.Context, id int) error {
 	return DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&ReferralRebate{}).Where("id = ? AND log_pending = ?", id, true).
+			UpdateColumn("log_pending", false)
+		if result.Error != nil || result.RowsAffected == 0 {
+			return result.Error
+		}
 		var rebate ReferralRebate
-		if err := lockForUpdate(tx).First(&rebate, id).Error; err != nil {
+		if err := tx.First(&rebate, id).Error; err != nil {
 			return err
 		}
-		if !rebate.LogPending {
-			return nil
-		}
-		store := LOG_DB.WithContext(ctx)
-		if DB == LOG_DB {
-			store = tx
-		}
-		requestId := fmt.Sprintf("referral-rebate-%d", rebate.Id)
-		var count int64
-		if err := store.Model(&Log{}).Where("request_id = ?", requestId).Count(&count).Error; err != nil {
-			return err
-		}
-		if count == 0 {
-			var inviter User
-			err := tx.Unscoped().Select("username").First(&inviter, rebate.InviterId).Error
-			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-				return err
-			}
-			other := NewLogOther()
-			other.SetPublic("referral_rebate_quota", rebate.Quota)
-			content := common.NewMessage("Referral rebate / Invited user {{username}} / {{quota}}", map[string]any{
-				"username": rebate.InviteeUsername,
-				"quota":    logger.FormatQuota(rebate.Quota),
-			})
-			log := Log{
-				UserId: rebate.InviterId, Username: inviter.Username, CreatedAt: rebate.CreditedAt,
-				Type: LogTypeTopup, RequestId: requestId,
-				Content: other.setContent([]*common.Message{content}), Other: other.JSONString(),
-			}
-			if err := store.Create(&log).Error; err != nil {
-				return err
-			}
-		}
-		return tx.Model(&rebate).UpdateColumn("log_pending", false).Error
+		other := NewLogOther()
+		other.SetPublic("referral_rebate_quota", rebate.Quota)
+		content := common.NewMessage("Referral rebate / Invited user {{username}} / {{quota}}", map[string]any{
+			"username": rebate.InviteeUsername,
+			"quota":    logger.FormatQuota(rebate.Quota),
+		})
+		return insertReferralCreditLog(tx, Log{
+			UserId: rebate.InviterId, CreatedAt: rebate.CreditedAt, Type: LogTypeTopup,
+			RequestId: fmt.Sprintf("referral-rebate-%d", rebate.Id),
+			Content:   other.setContent([]*common.Message{content}), Other: other.JSONString(),
+		})
 	})
+}
+
+// The caller clears the pending flag in its transaction to serialize delivery.
+// If the ledger transaction retries after a separate log store commits, reuse that log.
+func insertReferralCreditLog(tx *gorm.DB, log Log) error {
+	store := LOG_DB.WithContext(tx.Statement.Context)
+	if DB == LOG_DB {
+		store = tx
+	}
+	var count int64
+	if err := store.Model(&Log{}).Where("request_id = ?", log.RequestId).Count(&count).Error; err != nil || count > 0 {
+		return err
+	}
+	var inviter User
+	err := tx.Unscoped().Select("username").First(&inviter, log.UserId).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	log.Username = inviter.Username
+	return store.Create(&log).Error
 }
 
 // ReconcileReferralRebates credits due rebates and delivers their pending logs.
@@ -357,7 +392,7 @@ func ReconcileReferralRebates(ctx context.Context) error {
 		}
 		quota, err := rebate.calculateQuota(amount, rates[rebate.PaidCurrency])
 		if err != nil {
-			common.SysError(fmt.Sprintf("referral rebate unavailable for top-up %d: %v", rebate.TopUpId, err))
+			common.SysError(fmt.Sprintf("referral rebate %d unavailable: %v", rebate.Id, err))
 		}
 		err = DB.WithContext(ctx).Model(&rebate).Where("exchange_rate_pending = ?", true).
 			Updates(map[string]any{"quota": quota, "exchange_rate_pending": false}).Error
@@ -417,9 +452,35 @@ func (reward *InvitationReward) creditWallet(tx *gorm.DB) (bool, error) {
 	return result.RowsAffected == 1, result.Error
 }
 
-func afterInvitationRewardCredit(inviterId, reward int) {
-	syncCreditUserQuotaCache(inviterId, reward, "invitation reward")
-	RecordLog(inviterId, LogTypeSystem, common.NewMessage("Bonus for inviting a user {{quota}}", map[string]any{"quota": logger.FormatQuota(reward)}))
+func (reward *InvitationReward) afterCredit() {
+	syncCreditUserQuotaCache(reward.InviterId, reward.Quota, "invitation reward")
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := publishInvitationRewardLog(ctx, reward.Id); err != nil {
+		common.SysError(fmt.Sprintf("failed to record invitation reward log for reward %d: %v", reward.Id, err))
+	}
+}
+
+func publishInvitationRewardLog(ctx context.Context, id int) error {
+	return DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		result := tx.Model(&InvitationReward{}).Where("id = ? AND log_pending = ? AND credited_at > 0", id, true).
+			UpdateColumn("log_pending", false)
+		if result.Error != nil || result.RowsAffected == 0 {
+			return result.Error
+		}
+		var reward InvitationReward
+		if err := tx.First(&reward, id).Error; err != nil {
+			return err
+		}
+		other := NewLogOther()
+		other.SetPublic("invitation_reward_quota", reward.Quota)
+		content := common.NewMessage("Bonus for inviting a user {{quota}}", map[string]any{"quota": logger.FormatQuota(reward.Quota)})
+		return insertReferralCreditLog(tx, Log{
+			UserId: reward.InviterId, CreatedAt: reward.CreditedAt, Type: LogTypeTopup,
+			RequestId: fmt.Sprintf("invitation-reward-%d", reward.Id),
+			Content:   other.setContent([]*common.Message{content}), Other: other.JSONString(),
+		})
+	})
 }
 
 func ReconcileInvitationRewards(ctx context.Context) error {
@@ -450,17 +511,21 @@ func ReconcileInvitationRewards(ctx context.Context) error {
 			if err != nil || !credited {
 				return err
 			}
-			return tx.Model(&reward).UpdateColumn("credited_at", now).Error
+			return tx.Model(&reward).Updates(map[string]any{"credited_at": now, "log_pending": true}).Error
 		})
 		if err != nil {
 			result = errors.Join(result, err)
 		} else if credited {
-			if reward.InviteeId == nil {
-				syncCreditUserQuotaCache(reward.InviterId, reward.Quota, "legacy invitation reward")
-			} else {
-				afterInvitationRewardCredit(reward.InviterId, reward.Quota)
-			}
+			syncCreditUserQuotaCache(reward.InviterId, reward.Quota, "invitation reward")
 		}
+	}
+	var logIds []int
+	if err := DB.WithContext(ctx).Model(&InvitationReward{}).Where("log_pending = ?", true).
+		Order("id").Limit(200).Pluck("id", &logIds).Error; err != nil {
+		return errors.Join(result, err)
+	}
+	for _, id := range logIds {
+		result = errors.Join(result, publishInvitationRewardLog(ctx, id))
 	}
 	return result
 }

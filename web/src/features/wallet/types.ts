@@ -291,9 +291,11 @@ export type ReferralInvitee = {
 
 export type ReferralRebate = {
   id: number
+  record_type: 'topup_rebate' | 'invitation_reward'
   username: string
   paid_amount: string
   paid_currency: string
+  redemption_quota?: number
   rate_bps: number
   rebate_quota: number
   created_at: number

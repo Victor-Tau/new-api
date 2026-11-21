@@ -390,11 +390,18 @@ func TestAdminUserVerificationPolicy(t *testing.T) {
 
 func TestAdminReferralPermissionAndPrivacy(t *testing.T) {
 	_, identity, target := setupAdminUserTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.ReferralRebate{}, &model.InvitationReward{}))
 	other := &model.User{
 		Username: "invited-referral", Email: "invited@example.com",
 		AffCode: "invited-ref", InviterId: target.Id,
 	}
 	require.NoError(t, model.DB.Create(other).Error)
+	require.NoError(t, model.DB.Create(&model.InvitationReward{
+		InviterId: target.Id, InviteeId: &other.Id, Quota: 7500, AvailableAt: common.GetTimestamp() + 3600,
+	}).Error)
+	require.NoError(t, model.DB.Create(&model.ReferralRebate{
+		TopUpId: new(1), InviterId: target.Id, InviteeUsername: "hidden-topup", Quota: 5000,
+	}).Error)
 
 	asUser := func(id int, handler gin.HandlerFunc) *httptest.ResponseRecorder {
 		return adminUserRequest(http.MethodGet, "/api/user/referral", "",
@@ -405,7 +412,13 @@ func TestAdminReferralPermissionAndPrivacy(t *testing.T) {
 	assert.Contains(t, invitees.Body.String(), "i***d@example.com")
 	assert.NotContains(t, invitees.Body.String(), other.Email)
 	assert.NotContains(t, asUser(other.Id, GetReferralInvitees).Body.String(), other.Username)
-	assert.Equal(t, http.StatusForbidden, asUser(target.Id, GetReferralRebates).Code)
+	earned := asUser(target.Id, GetReferralRebates)
+	require.Equal(t, http.StatusOK, earned.Code)
+	assert.Contains(t, earned.Body.String(), `"record_type":"invitation_reward"`)
+	assert.NotContains(t, earned.Body.String(), "hidden-topup")
+	unrelated := asUser(other.Id, GetReferralRebates)
+	require.Equal(t, http.StatusOK, unrelated.Code)
+	assert.Contains(t, unrelated.Body.String(), `"items":[]`)
 
 	params := gin.Params{{Key: "id", Value: fmt.Sprint(target.Id)}}
 	body := `{"invitation_enabled":false,"rebate_enabled":false,"rate_bps":null}`
@@ -430,6 +443,7 @@ func TestAdminReferralPermissionAndPrivacy(t *testing.T) {
 
 	assert.Equal(t, http.StatusForbidden, asUser(target.Id, GetAffCode).Code)
 	assert.Equal(t, http.StatusForbidden, asUser(target.Id, GetReferralInvitees).Code)
+	assert.Equal(t, http.StatusForbidden, asUser(target.Id, GetReferralRebates).Code)
 	permissions := asUser(target.Id, GetSelfReferralPermissions)
 	require.Equal(t, http.StatusOK, permissions.Code)
 	assert.Contains(t, permissions.Body.String(), `"invitation_enabled":false`)
@@ -439,17 +453,22 @@ func TestAdminReferralPermissionAndPrivacy(t *testing.T) {
 
 func TestReferralRebatesReportsRemainingSeconds(t *testing.T) {
 	_, _, user := setupAdminUserTest(t)
-	require.NoError(t, model.DB.AutoMigrate(&model.ReferralRebate{}))
+	require.NoError(t, model.DB.AutoMigrate(&model.ReferralRebate{}, &model.InvitationReward{}))
 	require.NoError(t, model.DB.Model(user).UpdateColumn("referral_rebate_enabled", true).Error)
 
 	now := common.GetTimestamp()
 	due := now + 4500
 	require.NoError(t, model.DB.Create(&[]model.ReferralRebate{
-		{TopUpId: 1, InviterId: user.Id, InviteeUsername: "scheduled", Quota: 5000, AvailableAt: due},
-		{TopUpId: 2, InviterId: user.Id, InviteeUsername: "credited", Quota: 5000, AvailableAt: due, CreditedAt: now},
-		{TopUpId: 3, InviterId: user.Id, InviteeUsername: "due", Quota: 5000, AvailableAt: now - 10},
-		{TopUpId: 4, InviterId: user.Id, InviteeUsername: "no-rate", AvailableAt: due, ExchangeRatePending: true},
-		{TopUpId: 5, InviterId: user.Id, InviteeUsername: "no-rebate", AvailableAt: due},
+		{TopUpId: new(1), InviterId: user.Id, InviteeUsername: "scheduled", Quota: 5000, AvailableAt: due},
+		{TopUpId: new(2), InviterId: user.Id, InviteeUsername: "credited", Quota: 5000, AvailableAt: due, CreditedAt: now},
+		{TopUpId: new(3), InviterId: user.Id, InviteeUsername: "due", Quota: 5000, AvailableAt: now - 10},
+		{TopUpId: new(4), InviterId: user.Id, InviteeUsername: "no-rate", AvailableAt: due, ExchangeRatePending: true},
+		{TopUpId: new(5), InviterId: user.Id, InviteeUsername: "no-rebate", AvailableAt: due},
+	}).Error)
+	invitee := model.User{Username: "scheduled-reward", AffCode: "scheduled-reward", InviterId: user.Id}
+	require.NoError(t, model.DB.Create(&invitee).Error)
+	require.NoError(t, model.DB.Create(&model.InvitationReward{
+		InviteeId: &invitee.Id, InviterId: user.Id, Quota: 7500, AvailableAt: due,
 	}).Error)
 
 	response := adminUserRequest(http.MethodGet, "/api/user/referral/rebates", "",
@@ -458,8 +477,11 @@ func TestReferralRebatesReportsRemainingSeconds(t *testing.T) {
 	var result struct {
 		Success bool
 		Data    struct {
+			Total int
 			Items []struct {
 				Username         string `json:"username"`
+				RecordType       string `json:"record_type"`
+				Quota            int    `json:"rebate_quota"`
 				AvailableAt      int64  `json:"available_at"`
 				RemainingSeconds *int64 `json:"remaining_seconds"`
 			}
@@ -467,10 +489,17 @@ func TestReferralRebatesReportsRemainingSeconds(t *testing.T) {
 	}
 	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
 	require.True(t, result.Success)
-	require.Len(t, result.Data.Items, 5)
+	require.Len(t, result.Data.Items, 6)
+	assert.Equal(t, 6, result.Data.Total)
 	for _, item := range result.Data.Items {
 		require.NotNil(t, item.RemainingSeconds, item.Username)
-		if item.Username == "scheduled" {
+		if item.Username == invitee.Username {
+			assert.Equal(t, "invitation_reward", item.RecordType)
+			assert.Equal(t, 7500, item.Quota)
+		} else {
+			assert.Equal(t, "topup_rebate", item.RecordType)
+		}
+		if item.Username == "scheduled" || item.Username == invitee.Username {
 			assert.Equal(t, due, item.AvailableAt)
 			assert.Positive(t, *item.RemainingSeconds)
 			assert.GreaterOrEqual(t, *item.RemainingSeconds, due-common.GetTimestamp())
@@ -478,5 +507,16 @@ func TestReferralRebatesReportsRemainingSeconds(t *testing.T) {
 			continue
 		}
 		assert.Zero(t, *item.RemainingSeconds, item.Username)
+	}
+
+	require.NoError(t, model.DB.Model(user).UpdateColumn("invitation_disabled", true).Error)
+	topupsOnly := adminUserRequest(http.MethodGet, "/api/user/referral/rebates?ps=2", "",
+		"", service.AuthIdentity{UserID: user.Id}, common.RoleCommonUser, nil, GetReferralRebates)
+	require.Equal(t, http.StatusOK, topupsOnly.Code)
+	require.NoError(t, common.Unmarshal(topupsOnly.Body.Bytes(), &result))
+	assert.Equal(t, 5, result.Data.Total)
+	require.Len(t, result.Data.Items, 2)
+	for _, item := range result.Data.Items {
+		assert.Equal(t, "topup_rebate", item.RecordType)
 	}
 }

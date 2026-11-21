@@ -82,12 +82,13 @@ it('saves visual exchange rates and independent delays in the same request', asy
       target: { value: '6' },
     }
   )
-  fireEvent.change(
-    screen.getByRole('spinbutton', { name: 'Top-up rebate delay (hours)' }),
-    {
-      target: { value: '24' },
-    }
+  const rebateDelay = screen.getByRole('spinbutton', {
+    name: 'Top-up rebate delay (hours)',
+  })
+  expect(rebateDelay).toHaveAccessibleDescription(
+    'Counted from payment confirmation or code redemption. Enter 0 for immediate credit.'
   )
+  fireEvent.change(rebateDelay, { target: { value: '24' } })
   fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }))
 
   await waitFor(() =>
