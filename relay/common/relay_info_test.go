@@ -3,7 +3,9 @@ package common
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
@@ -102,6 +104,57 @@ func TestRelayInfoResponsesToolStateRoundTrip(t *testing.T) {
 	info.SetResponsesToolState(nil)
 	assert.Nil(t, info.ResponsesToolState())
 	assert.False(t, convmeta.ResponsesToolStateOf(info).IsCustomTool("exec"))
+}
+
+func TestGenRelayInfoClaudeClassifiesCompaction(t *testing.T) {
+	const requestBody = `{"model":"claude-opus-4-7","messages":[{"role":"user","content":"hello"}]`
+	for _, tc := range []struct {
+		name, header, value, fields string
+		compact                     bool
+	}{
+		{name: "request class", header: "x-Claude-Code-request-Class", value: "compaction", compact: true},
+		{name: "manual trigger", header: "X-Claude-Code-Compaction", value: "manual", compact: true},
+		{name: "automatic trigger", header: "X-Claude-Code-Compaction", value: "auto", compact: true},
+		{name: "reactive trigger", header: "X-Claude-Code-Compaction", value: "reactive", compact: true},
+		{name: "direct manual trigger", header: "X-CC-Compaction-Request", value: "manual", compact: true},
+		{name: "direct automatic trigger", header: "X-CC-Compaction-Request", value: "auto", compact: true},
+		{name: "direct reactive trigger", header: "X-CC-Compaction-Request", value: "reactive", compact: true},
+		{name: "on-demand summarize", fields: `,"compaction":{"type":"summarize"}`, compact: true},
+		{name: "ordinary request"},
+		{name: "unknown trigger", header: "X-Claude-Code-Compaction", value: "true"},
+		{name: "null configuration", fields: `,"compaction":null`},
+		{name: "non-string type", fields: `,"compaction":{"type":["summarize"]}`},
+		{name: "threshold configuration", fields: `,"context_management":{"edits":[{"type":"compact_20260112"}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := requestBody + tc.fields + "}"
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest("POST", "/v1/messages", strings.NewReader(raw))
+			c.Request.Header.Set("Content-Type", "application/json")
+			if tc.header != "" {
+				c.Request.Header.Set(tc.header, tc.value)
+			}
+			t.Cleanup(func() { common.CleanupBodyStorage(c) })
+
+			var request dto.ClaudeRequest
+			require.NoError(t, common.UnmarshalBodyReusableNoCopy(c, &request))
+			common.SetContextKey(c, constant.ContextKeyOriginalModel, request.Model)
+			common.SetContextKey(c, constant.ContextKeyChannelSetting, dto.ChannelSettings{PassThroughBodyEnabled: true})
+			info, err := GenRelayInfo(c, types.RelayFormatClaude, &request, nil)
+			require.NoError(t, err)
+			info.InitChannelMeta(c)
+			assert.Equal(t, tc.compact, info.Compact)
+
+			if tc.compact && tc.fields != "" {
+				body, err := io.ReadAll(c.Request.Body)
+				require.NoError(t, err)
+				assert.Equal(t, raw, string(body))
+				encoded, err := common.Marshal(&request)
+				require.NoError(t, err)
+				assert.JSONEq(t, requestBody+"}", string(encoded))
+			}
+		})
+	}
 }
 
 func TestGenRelayInfoCapturesRequestReasoningEffort(t *testing.T) {

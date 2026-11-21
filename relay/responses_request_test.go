@@ -12,6 +12,8 @@ import (
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relay/requestplugin"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -24,6 +26,84 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 )
+
+func TestResponsesCompactionLog(t *testing.T) {
+	const compaction = `{"request_kind":"compaction"}`
+	for _, tc := range []struct {
+		name, header, fields          string
+		socket, explicit, passthrough bool
+		compact                       bool
+	}{
+		{name: "header survives passthrough", header: compaction, fields: `"input":"hello"`, passthrough: true, compact: true},
+		{name: "Codex metadata in WebSocket frame", fields: `"input":"hello","client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"compaction\"}"}`, socket: true, compact: true},
+		{name: "flat client metadata", fields: `"input":"hello","client_metadata":{"request_kind":"compaction"}`, compact: true},
+		{name: "body metadata", fields: `"input":"hello","metadata":{"request_kind":"compaction"}`, compact: true},
+		{name: "trigger with ordinary request kind", header: `{"request_kind":"turn"}`, fields: `"input":[{"type":"message"},{"type":"compaction_trigger"}]`, compact: true},
+		{name: "per-frame metadata overrides handshake", header: compaction, fields: `"input":[{"type":"compaction"}],"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\"}"}`, socket: true},
+		{name: "malformed header and text input", header: `{"request_kind":"compaction"`, fields: `"input":"compaction_trigger"`},
+		{name: "trigger outside input array", fields: `"input":{"type":"compaction_trigger"}`},
+		{name: "explicit compact endpoint", fields: `"input":"hello"`, explicit: true, compact: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path, method := "/v1/responses", http.MethodPost
+			format := types.RelayFormat(types.RelayFormatOpenAIResponses)
+			mode := relayconstant.RelayModeResponses
+			if tc.explicit {
+				path += "/compact"
+				format = types.RelayFormatOpenAIResponsesCompaction
+				mode = relayconstant.RelayModeResponsesCompact
+			}
+			if tc.socket {
+				method = http.MethodGet
+			}
+			raw := `{"model":"gpt-5.1-codex",` + tc.fields + `}`
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(method, path, strings.NewReader(raw))
+			c.Request.Header.Set("Content-Type", "application/json")
+			c.Request.Header.Set("x-codex-turn-metadata", tc.header)
+			t.Cleanup(func() { common.CleanupBodyStorage(c) })
+
+			var request dto.Request
+			if tc.socket {
+				create, _, err := normalizeResponsesWSTestMessage([]byte(`{"type":"response.create","response":` + raw + `}`))
+				require.NoError(t, err)
+				request = &create.Request
+			} else {
+				var err error
+				request, err = helper.GetAndValidateRequest(c, format)
+				require.NoError(t, err)
+			}
+			common.SetContextKey(c, constant.ContextKeyOriginalModel, "gpt-5.1-codex")
+			common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, "https://api.openai.com")
+			info, err := relaycommon.GenRelayInfo(c, format, request, nil)
+			require.NoError(t, err)
+			assert.Equal(t, mode, info.RelayMode)
+
+			if tc.passthrough {
+				common.SetContextKey(c, constant.ContextKeyChannelSetting, dto.ChannelSettings{PassThroughBodyEnabled: true})
+				adaptor, body, closer, apiErr := PrepareResponsesRequest(c, info, request.(*dto.OpenAIResponsesRequest))
+				require.Nil(t, apiErr)
+				t.Cleanup(func() { require.NoError(t, closer.Close()) })
+				wire, err := io.ReadAll(body)
+				require.NoError(t, err)
+				assert.Equal(t, raw, string(wire))
+				upstream, err := adaptor.GetRequestURL(info)
+				require.NoError(t, err)
+				assert.Equal(t, "https://api.openai.com/v1/responses", upstream)
+			} else {
+				info.InitChannelMeta(c)
+			}
+
+			other := service.GenerateTextOtherInfo(c, info, 0, 0, 0, 0, 0, 0, 0).Snapshot()
+			if tc.compact {
+				assert.Equal(t, true, other["compact"])
+			} else {
+				assert.NotContains(t, other, "compact")
+			}
+		})
+	}
+}
 
 func TestPrepareResponsesRequestDeepSeekEffectiveReasoning(t *testing.T) {
 	settings := model_setting.GetGlobalSettings()

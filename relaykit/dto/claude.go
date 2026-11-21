@@ -259,21 +259,25 @@ type ClaudeRequest struct {
 	// ServiceTier specifies upstream service level and may affect billing.
 	// This field is filtered by default and can be enabled via channel setting allow_service_tier.
 	ServiceTier string `json:"service_tier,omitempty"`
+	// Compaction captures the inbound parameter for request classification.
+	Compaction json.RawMessage `json:"-"`
 }
 
-// UnmarshalJSON keeps client tools as raw JSON: Claude keeps schema property
-// order in strict tool input, and decoded maps would sort the properties. A
-// null tools value stays absent, as the former decoded value did.
+// UnmarshalJSON captures the incoming compaction parameter and keeps client
+// tools as raw JSON to preserve schema property order for strict tool input.
+// A null tools value stays absent, as the former decoded value did.
 func (c *ClaudeRequest) UnmarshalJSON(data []byte) error {
 	type requestFields ClaudeRequest
 	var fields struct {
 		requestFields
-		Tools json.RawMessage `json:"tools,omitempty"`
+		Tools      json.RawMessage `json:"tools,omitempty"`
+		Compaction json.RawMessage `json:"compaction"`
 	}
 	if err := kitutil.Unmarshal(data, &fields); err != nil {
 		return err
 	}
 	*c = ClaudeRequest(fields.requestFields)
+	c.Compaction = fields.Compaction
 	if len(fields.Tools) > 0 && kitutil.GetJsonType(fields.Tools) != "null" {
 		c.Tools = fields.Tools
 	}

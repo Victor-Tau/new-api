@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -99,6 +100,7 @@ type RelayInfo struct {
 	IsPlayground           bool
 	UsePrice               bool
 	RelayMode              int
+	Compact                bool
 	OriginModelName        string
 	ResponseModel          *ResponseModel
 
@@ -496,6 +498,14 @@ func GenRelayInfoClaude(c *gin.Context, request dto.Request) *RelayInfo {
 		LastMessagesType: LastMessageTypeNone,
 	}
 	info.IsClaudeBetaQuery = c.Query("beta") == "true"
+	compactionReasons := []string{"manual", "auto", "reactive"}
+	info.Compact = c.GetHeader("X-Claude-Code-Request-Class") == "compaction" ||
+		slices.Contains(compactionReasons, c.GetHeader("X-Claude-Code-Compaction")) ||
+		slices.Contains(compactionReasons, c.GetHeader("X-CC-Compaction-Request"))
+	if claudeRequest, ok := request.(*dto.ClaudeRequest); ok && !info.Compact {
+		compactionType := ojson.GetBytesNoCopy(claudeRequest.Compaction, "type")
+		info.Compact = compactionType.Type == ojson.String && compactionType.String() == "summarize"
+	}
 	return info
 }
 
@@ -522,10 +532,13 @@ func GenRelayInfoEmbedding(c *gin.Context, request dto.Request) *RelayInfo {
 	return info
 }
 
+const codexTurnMetadataHeader = "x-codex-turn-metadata"
+
 func GenRelayInfoResponses(c *gin.Context, request *dto.OpenAIResponsesRequest) *RelayInfo {
 	info := genBaseRelayInfo(c, request)
 	info.RelayMode = relayconstant.RelayModeResponses
 	info.RelayFormat = types.RelayFormatOpenAIResponses
+	info.Compact = isResponsesCompaction(request, c.GetHeader(codexTurnMetadataHeader))
 
 	info.ResponsesUsageInfo = &ResponsesUsageInfo{
 		BuiltInTools: make(map[string]*BuildInToolInfo),
@@ -540,6 +553,43 @@ func GenRelayInfoResponses(c *gin.Context, request *dto.OpenAIResponsesRequest) 
 		}
 	}
 	return info
+}
+
+func isResponsesCompaction(request *dto.OpenAIResponsesRequest, headerMetadata string) bool {
+	// Prefer per-request metadata because the WebSocket handshake header may
+	// describe an earlier turn on a reused connection.
+	clientMetadata := ojson.GetBytesNoCopy(request.ClientMetadata, "@this")
+	turnMetadata := clientMetadata.Get(codexTurnMetadataHeader)
+	if turnMetadata.Type == ojson.String {
+		if raw := turnMetadata.String(); ojson.Valid(raw) {
+			turnMetadata = ojson.Parse(raw)
+		}
+	}
+	kind := turnMetadata.Get("request_kind")
+	if kind.Type != ojson.String {
+		kind = clientMetadata.Get("request_kind")
+	}
+	if kind.Type != ojson.String {
+		kind = ojson.GetBytesNoCopy(request.Metadata, "request_kind")
+	}
+	if kind.Type != ojson.String && headerMetadata != "" && ojson.Valid(headerMetadata) {
+		kind = ojson.Get(headerMetadata, "request_kind")
+	}
+	if kind.Type == ojson.String && kind.String() == "compaction" {
+		return true
+	}
+
+	input := ojson.GetBytesNoCopy(request.Input, "@this")
+	if !input.IsArray() {
+		return false
+	}
+	compactTrigger := false
+	input.ForEach(func(_, item ojson.Result) bool {
+		itemType := item.Get("type")
+		compactTrigger = itemType.Type == ojson.String && itemType.String() == "compaction_trigger"
+		return !compactTrigger
+	})
+	return compactTrigger
 }
 
 func GenRelayInfoGemini(c *gin.Context, request dto.Request) *RelayInfo {
@@ -825,6 +875,7 @@ func GenRelayInfoResponsesCompaction(c *gin.Context, request *dto.OpenAIResponse
 		info.RelayMode = relayconstant.RelayModeResponsesCompact
 	}
 	info.RelayFormat = types.RelayFormatOpenAIResponsesCompaction
+	info.Compact = true
 	return info
 }
 
