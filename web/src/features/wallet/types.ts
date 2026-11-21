@@ -287,3 +287,32 @@ export interface BillingHistoryResponse {
 export interface CompleteOrderRequest {
   trade_no: string
 }
+
+export type ReferralPermissions = {
+  invitation_enabled: boolean
+  rebate_enabled: boolean
+  rate_bps?: number | null
+}
+
+export type ReferralInvitee = {
+  id: number
+  username: string
+  email: string
+}
+
+export type ReferralRebate = {
+  id: number
+  username: string
+  paid_amount: string
+  paid_currency: string
+  rate_bps: number
+  rebate_quota: number
+  created_at: number
+  credited_at: number
+  exchange_rate_pending?: boolean
+}
+
+export type ReferralPage<T> = {
+  items: T[]
+  total: number
+}

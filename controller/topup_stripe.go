@@ -301,15 +301,40 @@ func fulfillOrder(ctx context.Context, event stripe.Event, referenceId string, c
 		return
 	}
 
-	err := model.Recharge(referenceId, customerId, callerIp)
+	payment := stripeWalletPayment(event.Data.Raw)
+	err := model.Recharge(referenceId, customerId, callerIp, payment)
 	if err != nil {
 		logger.LogError(ctx, common.LogText("Stripe top-up processing failed trade_no=%s event_type=%s client_ip=%s error=%q", referenceId, string(event.Type), callerIp, err.Error()))
 		return
 	}
 
-	total, _ := strconv.ParseFloat(event.GetObjectValue("amount_total"), 64)
-	currency := strings.ToUpper(event.GetObjectValue("currency"))
-	logger.LogInfo(ctx, common.LogText("Stripe top-up succeeded trade_no=%s amount_total=%.2f currency=%s event_type=%s client_ip=%s", referenceId, total/100, currency, string(event.Type), callerIp))
+	logger.LogInfo(ctx, common.LogText("Stripe top-up succeeded trade_no=%s amount_total=%.2f currency=%s event_type=%s client_ip=%s", referenceId, payment.Amount.InexactFloat64(), payment.Currency, string(event.Type), callerIp))
+}
+
+func stripeWalletPayment(data []byte) model.WalletTopUpPayment {
+	var checkout struct {
+		Amount      int64  `json:"amount_total"`
+		Currency    string `json:"currency"`
+		Presentment *struct {
+			Amount   int64  `json:"presentment_amount"`
+			Currency string `json:"presentment_currency"`
+		} `json:"presentment_details"`
+	}
+	if err := common.Unmarshal(data, &checkout); err != nil {
+		return model.WalletTopUpPayment{}
+	}
+	amount, currency := checkout.Amount, strings.ToUpper(checkout.Currency)
+	if checkout.Presentment != nil && checkout.Presentment.Currency != "" {
+		amount, currency = checkout.Presentment.Amount, strings.ToUpper(checkout.Presentment.Currency)
+	}
+	scale := int32(2)
+	// These currencies have zero-decimal Stripe charge amounts. ISK and
+	// UGX still use two decimals for backward compatibility.
+	switch currency {
+	case "BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA", "PYG", "RWF", "VND", "VUV", "XAF", "XOF", "XPF":
+		scale = 0
+	}
+	return model.ParseWalletTopUpPayment(decimal.NewFromInt(amount).Shift(-scale).String(), currency)
 }
 
 func sessionExpired(ctx context.Context, event stripe.Event) {

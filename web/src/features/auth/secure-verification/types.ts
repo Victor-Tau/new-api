@@ -41,6 +41,7 @@ export type SecurityProofScope =
   | 'account.delete'
   | 'admin.user.create'
   | 'admin.user.update'
+  | 'admin.user.referral'
   | 'admin.user.delete'
   | 'admin.user.manage'
   | 'admin.user.passkey.reset'
@@ -61,6 +62,7 @@ export type VerificationOperation =
   | {
       scope:
         | 'admin.user.update'
+        | 'admin.user.referral'
         | 'admin.user.delete'
         | 'admin.user.passkey.reset'
         | 'admin.user.2fa.disable'

@@ -59,6 +59,7 @@ type WaffoPancakeWebhookData struct {
 	BuyerEmail                    string
 	Currency                      string
 	Amount                        string
+	Total                         *string
 	TaxAmount                     string
 	ProductName                   string
 	MerchantProvidedBuyerIdentity string
@@ -193,6 +194,7 @@ func VerifyConfiguredWaffoPancakeWebhook(payload string, signatureHeader string)
 			BuyerEmail:                    evt.Data.BuyerEmail,
 			Currency:                      evt.Data.Currency,
 			Amount:                        evt.Data.Amount,
+			Total:                         evt.Data.Total,
 			TaxAmount:                     evt.Data.TaxAmount,
 			ProductName:                   evt.Data.ProductName,
 			MerchantProvidedBuyerIdentity: identity,

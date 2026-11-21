@@ -387,3 +387,52 @@ func TestAdminUserVerificationPolicy(t *testing.T) {
 		assert.Zero(t, flows)
 	})
 }
+
+func TestAdminReferralPermissionAndPrivacy(t *testing.T) {
+	_, identity, target := setupAdminUserTest(t)
+	other := &model.User{
+		Username: "invited-referral", Email: "invited@example.com",
+		AffCode: "invited-ref", InviterId: target.Id,
+	}
+	require.NoError(t, model.DB.Create(other).Error)
+
+	asUser := func(id int, handler gin.HandlerFunc) *httptest.ResponseRecorder {
+		return adminUserRequest(http.MethodGet, "/api/user/referral", "",
+			"", service.AuthIdentity{UserID: id}, common.RoleCommonUser, nil, handler)
+	}
+	invitees := asUser(target.Id, GetReferralInvitees)
+	require.Equal(t, http.StatusOK, invitees.Code)
+	assert.Contains(t, invitees.Body.String(), "i***d@example.com")
+	assert.NotContains(t, invitees.Body.String(), other.Email)
+	assert.NotContains(t, asUser(other.Id, GetReferralInvitees).Body.String(), other.Username)
+	assert.Equal(t, http.StatusForbidden, asUser(target.Id, GetReferralRebates).Code)
+
+	params := gin.Params{{Key: "id", Value: fmt.Sprint(target.Id)}}
+	body := `{"invitation_enabled":false,"rebate_enabled":false,"rate_bps":null}`
+	write := func(proof string, role int, params gin.Params) *httptest.ResponseRecorder {
+		return adminUserRequest(http.MethodPut, "/api/user/:id/referral", body,
+			proof, identity, role, params, UpdateAdminReferralPermissions)
+	}
+	assert.Equal(t, http.StatusForbidden, write("", common.RoleRootUser, params).Code)
+	assert.Equal(t, http.StatusForbidden, write("", common.RoleAdminUser,
+		gin.Params{{Key: "id", Value: fmt.Sprint(identity.UserID)}}).Code)
+	proof := issueSecurityEnrollmentProof(t, identity, service.VerificationOperation{
+		Scope:   service.VerificationScopeAdminUserReferral,
+		Context: []byte(fmt.Sprintf(`{"user_id":%d}`, target.Id)),
+	}, service.VerificationMethodPassword)
+	assert.Equal(t, http.StatusForbidden, write(proof, common.RoleRootUser,
+		gin.Params{{Key: "id", Value: fmt.Sprint(other.Id)}}).Code)
+	saved := write(proof, common.RoleRootUser, params)
+	var result securityEnrollmentResponse
+	require.NoError(t, common.Unmarshal(saved.Body.Bytes(), &result))
+	require.True(t, result.Success, saved.Body.String())
+	assert.Equal(t, http.StatusForbidden, write(proof, common.RoleRootUser, params).Code)
+
+	assert.Equal(t, http.StatusForbidden, asUser(target.Id, GetAffCode).Code)
+	assert.Equal(t, http.StatusForbidden, asUser(target.Id, GetReferralInvitees).Code)
+	permissions := asUser(target.Id, GetSelfReferralPermissions)
+	require.Equal(t, http.StatusOK, permissions.Code)
+	assert.Contains(t, permissions.Body.String(), `"invitation_enabled":false`)
+	assert.Contains(t, permissions.Body.String(), `"rebate_enabled":false`)
+	assert.NotContains(t, permissions.Body.String(), "rate_bps")
+}

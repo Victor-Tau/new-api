@@ -148,6 +148,8 @@ func InitOptionMap() {
 	common.OptionMap["TurnstileSiteKey"] = ""
 	common.OptionMap["TurnstileSecretKey"] = ""
 	common.OptionMap["QuotaForNewUser"] = strconv.Itoa(common.QuotaForNewUser)
+	common.OptionMap[ReferralDefaultRateOption] = "0"
+	common.OptionMap[ReferralExchangeRatesOption] = "{}"
 	common.OptionMap["QuotaForInviter"] = strconv.Itoa(common.QuotaForInviter)
 	common.OptionMap["QuotaForInvitee"] = strconv.Itoa(common.QuotaForInvitee)
 	common.OptionMap["QuotaRemindEnabled"] = strconv.FormatBool(common.QuotaRemindEnabled)
@@ -242,6 +244,12 @@ func SyncOptions(frequency int) {
 
 func validateOptionValue(key string, value string) error {
 	switch key {
+	case ReferralDefaultRateOption:
+		_, err := ParseReferralRate(value)
+		return err
+	case ReferralExchangeRatesOption:
+		_, err := parseReferralExchangeRates(value)
+		return err
 	case vipTierOption:
 		_, err := parseVIPSettings(value)
 		return err
@@ -304,7 +312,8 @@ func validateOptionValue(key string, value string) error {
 }
 
 func UpdateOption(key string, value string) error {
-	if key == vipTierOption || key == emailGroupOption || key == topupRatioOption {
+	if key == vipTierOption || key == emailGroupOption || key == topupRatioOption ||
+		key == ReferralDefaultRateOption || key == ReferralExchangeRatesOption {
 		return UpdateOptionsBulk(map[string]string{key: value})
 	}
 	if IsRequestPolicyOption(key) {

@@ -200,3 +200,47 @@ func TestStripeVIPDiscountChangesCheckoutPriceAndPreservesCredit(t *testing.T) {
 	_, err = validateCreditedQuota(getStripeCreditedQuota(decimal.NewFromInt(common.MaxWalletQuota)))
 	require.Error(t, err)
 }
+
+func TestStripeReferralRebateUsesCapturedPayment(t *testing.T) {
+	_, _, invitee := setupAdminUserTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.TopUp{}, &model.SubscriptionOrder{}, &model.ReferralRebate{}, &model.GrowthEvent{}, &model.UserGrowth{}))
+	require.NoError(t, model.LOG_DB.AutoMigrate(&model.Log{}))
+	compliance := operation_setting.GetPaymentSetting()
+	original := *compliance
+	compliance.ComplianceConfirmed = true
+	compliance.ComplianceTermsVersion = operation_setting.CurrentComplianceTermsVersion
+	t.Cleanup(func() { *compliance = original })
+
+	rate := 2500
+	inviter := model.User{
+		Username: "stripe-referrer", AffCode: "stripe-aff", ReferralRebateEnabled: true,
+		ReferralRebateRate: &rate,
+	}
+	require.NoError(t, model.DB.Create(&inviter).Error)
+	require.NoError(t, model.DB.Model(invitee).UpdateColumn("inviter_id", inviter.Id).Error)
+	order := model.TopUp{
+		UserId: invitee.Id, TradeNo: "stripe-referral-checkout", Amount: 10, Money: 10,
+		PaymentProvider: model.PaymentProviderStripe, Status: common.TopUpStatusPending,
+	}
+	require.NoError(t, order.Insert())
+
+	// Credit 10 wallet units for the order, but the customer paid only $4.
+	var data stripe.EventData
+	require.NoError(t, common.Unmarshal([]byte(`{"object":{"amount_total":400,"currency":"usd"}}`), &data))
+	event := stripe.Event{Type: stripe.EventTypeCheckoutSessionCompleted, Data: &data}
+	fulfillOrder(t.Context(), event, order.TradeNo, "", "")
+	fulfillOrder(t.Context(), event, order.TradeNo, "", "")
+	stored, err := model.GetUserById(inviter.Id, false)
+	require.NoError(t, err)
+	assert.Equal(t, common.QuotaFromFloat(common.QuotaPerUnit), stored.Quota)
+
+	response := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(response)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/log/self?p=1&type=1", nil)
+	c.Set("id", inviter.Id)
+	c.Set("role", common.RoleCommonUser)
+	GetUserLogs(c)
+	require.Equal(t, http.StatusOK, response.Code)
+	assert.Contains(t, response.Body.String(), "Referral rebate / Invited user managed-user")
+	assert.Contains(t, response.Body.String(), `"type":1`)
+}

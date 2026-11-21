@@ -150,3 +150,9 @@ export interface ManageUserQuotaPayload {
 // ============================================================================
 
 export type UsersDialogType = 'create' | 'update' | 'delete'
+
+export type UserReferralPermissions = {
+  invitation_enabled: boolean
+  rebate_enabled: boolean
+  rate_bps?: number | null
+}

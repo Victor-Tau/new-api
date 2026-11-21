@@ -77,42 +77,45 @@ func resolveUserSortOptions(sortOptions []UserSortOptions) UserSortOptions {
 // User if you add sensitive fields, don't forget to clean them in setupLogin function.
 // Otherwise, the sensitive information will be saved on local storage in plain text!
 type User struct {
-	Id                   int                        `json:"id"`
-	Username             string                     `json:"username" gorm:"unique;index" validate:"max=20"`
-	Password             string                     `json:"password" gorm:"not null;" validate:"min=8,max=128"`
-	HasPassword          bool                       `json:"-" gorm:"-:all"`
-	OriginalPassword     string                     `json:"original_password" gorm:"-:all"` // this field is only for Password change verification, don't save it to database!
-	DisplayName          string                     `json:"display_name" gorm:"index" validate:"max=20"`
-	Role                 int                        `json:"role" gorm:"type:int;default:1"`   // admin, common
-	Status               int                        `json:"status" gorm:"type:int;default:1"` // enabled, disabled
-	Email                string                     `json:"email" gorm:"index" validate:"max=50"`
-	GitHubId             string                     `json:"github_id" gorm:"column:github_id;index"`
-	DiscordId            string                     `json:"discord_id" gorm:"column:discord_id;index"`
-	OidcId               string                     `json:"oidc_id" gorm:"column:oidc_id;index"`
-	WeChatId             string                     `json:"wechat_id" gorm:"column:wechat_id;index"`
-	TelegramId           string                     `json:"telegram_id" gorm:"column:telegram_id;index"`
-	VerificationCode     string                     `json:"verification_code" gorm:"-:all"`                         // this field is only for Email verification, don't save it to database!
-	AccessToken          *string                    `json:"-" gorm:"type:char(32);column:access_token;uniqueIndex"` // Deprecated: 旧版面板访问令牌，仅在升级后的过渡期内使用；删除 users.access_token 列时一并移除。
-	AccessTokenCreatedAt *int64                     `json:"-" gorm:"type:bigint;column:access_token_created_at"`    // Deprecated: 旧版面板访问令牌，仅在升级后的过渡期内使用；删除 users.access_token 列时一并移除。
-	Quota                int                        `json:"quota" gorm:"type:int;default:0"`
-	UsedQuota            int                        `json:"used_quota" gorm:"type:int;default:0;column:used_quota"` // used quota
-	RequestCount         int                        `json:"request_count" gorm:"type:int;default:0;"`               // request number
-	Group                string                     `json:"group" gorm:"type:varchar(64);default:'VIP0'"`
-	VIPLevel             *int                       `json:"vip_level" gorm:"column:vip_level;index"`
-	AffCode              string                     `json:"aff_code" gorm:"type:varchar(32);column:aff_code;uniqueIndex"`
-	AffCount             int                        `json:"aff_count" gorm:"type:int;default:0;column:aff_count"`
-	AffQuota             int                        `json:"aff_quota" gorm:"type:int;default:0;column:aff_quota"`           // 邀请剩余额度
-	AffHistoryQuota      int                        `json:"aff_history_quota" gorm:"type:int;default:0;column:aff_history"` // 邀请历史额度
-	InviterId            int                        `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
-	DeletedAt            gorm.DeletedAt             `gorm:"index"`
-	LinuxDOId            string                     `json:"linux_do_id" gorm:"column:linux_do_id;index"`
-	Setting              string                     `json:"setting" gorm:"type:text;column:setting"`
-	Remark               string                     `json:"remark,omitempty" gorm:"type:varchar(255)" validate:"max=255"`
-	StripeCustomer       string                     `json:"stripe_customer" gorm:"type:varchar(64);column:stripe_customer;index"`
-	CreatedAt            int64                      `json:"created_at" gorm:"autoCreateTime;column:created_at"`
-	LastLoginAt          int64                      `json:"last_login_at" gorm:"default:0;column:last_login_at"`
-	AuthVersion          int64                      `json:"-" gorm:"type:bigint;not null;default:1;column:auth_version"`
-	AdminPermissions     map[string]map[string]bool `json:"admin_permissions,omitempty" gorm:"-:all"`
+	Id                    int                        `json:"id"`
+	Username              string                     `json:"username" gorm:"unique;index" validate:"max=20"`
+	Password              string                     `json:"password" gorm:"not null;" validate:"min=8,max=128"`
+	HasPassword           bool                       `json:"-" gorm:"-:all"`
+	OriginalPassword      string                     `json:"original_password" gorm:"-:all"` // this field is only for Password change verification, don't save it to database!
+	DisplayName           string                     `json:"display_name" gorm:"index" validate:"max=20"`
+	Role                  int                        `json:"role" gorm:"type:int;default:1"`   // admin, common
+	Status                int                        `json:"status" gorm:"type:int;default:1"` // enabled, disabled
+	Email                 string                     `json:"email" gorm:"index" validate:"max=50"`
+	GitHubId              string                     `json:"github_id" gorm:"column:github_id;index"`
+	DiscordId             string                     `json:"discord_id" gorm:"column:discord_id;index"`
+	OidcId                string                     `json:"oidc_id" gorm:"column:oidc_id;index"`
+	WeChatId              string                     `json:"wechat_id" gorm:"column:wechat_id;index"`
+	TelegramId            string                     `json:"telegram_id" gorm:"column:telegram_id;index"`
+	VerificationCode      string                     `json:"verification_code" gorm:"-:all"`                         // this field is only for Email verification, don't save it to database!
+	AccessToken           *string                    `json:"-" gorm:"type:char(32);column:access_token;uniqueIndex"` // Deprecated: 旧版面板访问令牌，仅在升级后的过渡期内使用；删除 users.access_token 列时一并移除。
+	AccessTokenCreatedAt  *int64                     `json:"-" gorm:"type:bigint;column:access_token_created_at"`    // Deprecated: 旧版面板访问令牌，仅在升级后的过渡期内使用；删除 users.access_token 列时一并移除。
+	Quota                 int                        `json:"quota" gorm:"type:int;default:0"`
+	UsedQuota             int                        `json:"used_quota" gorm:"type:int;default:0;column:used_quota"` // used quota
+	RequestCount          int                        `json:"request_count" gorm:"type:int;default:0;"`               // request number
+	Group                 string                     `json:"group" gorm:"type:varchar(64);default:'VIP0'"`
+	VIPLevel              *int                       `json:"vip_level" gorm:"column:vip_level;index"`
+	AffCode               string                     `json:"aff_code" gorm:"type:varchar(32);column:aff_code;uniqueIndex"`
+	AffCount              int                        `json:"aff_count" gorm:"type:int;default:0;column:aff_count"`
+	AffQuota              int                        `json:"aff_quota" gorm:"type:int;default:0;column:aff_quota"`           // 邀请剩余额度
+	AffHistoryQuota       int                        `json:"aff_history_quota" gorm:"type:int;default:0;column:aff_history"` // 邀请历史额度
+	InviterId             int                        `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
+	InvitationDisabled    bool                       `json:"-"`
+	ReferralRebateEnabled bool                       `json:"-"`
+	ReferralRebateRate    *int                       `json:"-"` // Basis points. Nil uses the site default.
+	DeletedAt             gorm.DeletedAt             `gorm:"index"`
+	LinuxDOId             string                     `json:"linux_do_id" gorm:"column:linux_do_id;index"`
+	Setting               string                     `json:"setting" gorm:"type:text;column:setting"`
+	Remark                string                     `json:"remark,omitempty" gorm:"type:varchar(255)" validate:"max=255"`
+	StripeCustomer        string                     `json:"stripe_customer" gorm:"type:varchar(64);column:stripe_customer;index"`
+	CreatedAt             int64                      `json:"created_at" gorm:"autoCreateTime;column:created_at"`
+	LastLoginAt           int64                      `json:"last_login_at" gorm:"default:0;column:last_login_at"`
+	AuthVersion           int64                      `json:"-" gorm:"type:bigint;not null;default:1;column:auth_version"`
+	AdminPermissions      map[string]map[string]bool `json:"admin_permissions,omitempty" gorm:"-:all"`
 }
 
 func (user *User) BeforeCreate(_ *gorm.DB) error {
@@ -541,7 +544,7 @@ func GetSelfUserById(id int) (*User, error) {
 		"id", "username", "display_name", "role", "status", "email",
 		"github_id", "discord_id", "oidc_id", "wechat_id", "telegram_id",
 		"group", "vip_level", "quota", "used_quota", "request_count", "aff_code", "aff_count",
-		"aff_quota", "aff_history", "inviter_id", "linux_do_id", "setting",
+		"aff_quota", "aff_history", "inviter_id", "invitation_disabled", "linux_do_id", "setting",
 		"stripe_customer", "auth_version", "created_at",
 		"CASE WHEN password <> '' THEN 1 ELSE 0 END AS has_password",
 	}).First(&profile, "id = ?", id).Error
@@ -554,7 +557,10 @@ func GetUserIdByAffCode(affCode string) (int, error) {
 		return 0, errors.New("affiliate code is empty")
 	}
 	var user User
-	err := DB.Select("id").First(&user, "aff_code = ?", affCode).Error
+	err := DB.Select("id", "invitation_disabled").First(&user, "aff_code = ?", affCode).Error
+	if err == nil && user.InvitationDisabled {
+		return 0, gorm.ErrRecordNotFound
+	}
 	return user.Id, err
 }
 
@@ -685,35 +691,21 @@ func ensureEmailAvailableWithTx(tx *gorm.DB, email string, excludeUserID int) er
 
 func (user *User) Insert(inviterId int) error {
 	if err := DB.Transaction(func(tx *gorm.DB) error {
-		return withNormalizedEmailLock(tx, user.Email, func(tx *gorm.DB) error {
-			if err := user.prepareForInsert(tx); err != nil {
-				return err
-			}
-			user.Quota = common.QuotaForNewUser
-			user.AffCode = common.GetRandomString(4)
-
-			// 初始化用户设置，包括默认的边栏配置
-			if user.Setting == "" {
-				defaultSetting := dto.UserSetting{}
-				// 这里暂时不设置SidebarModules，因为需要在用户创建后根据角色设置
-				user.SetSetting(defaultSetting)
-			}
-
-			return tx.Create(user).Error
-		})
+		return user.InsertWithTx(tx, inviterId)
 	}); err != nil {
 		return err
 	}
 
-	user.finishInsert(inviterId)
+	user.FinishInsert()
 	return nil
 }
 
-func (user *User) finishInsert(inviterId int) {
+func (user *User) FinishInsert() {
+	inviterId := user.InviterId
 	// 用户创建成功后，根据角色初始化边栏配置
 	// 需要重新获取用户以确保有正确的ID和Role
 	var createdUser User
-	if err := DB.Where("username = ?", user.Username).First(&createdUser).Error; err == nil {
+	if err := DB.First(&createdUser, user.Id).Error; err == nil {
 		// 生成基于角色的默认边栏配置
 		defaultSidebarConfig := generateDefaultSidebarConfigForRole(createdUser.Role)
 		if defaultSidebarConfig != "" {
@@ -742,10 +734,6 @@ func (user *User) finishInsert(inviterId int) {
 	}
 }
 
-func (user *User) FinishInsert(inviterId int) {
-	user.finishInsert(inviterId)
-}
-
 // InsertWithTx inserts a new user within an existing transaction.
 // This is used for OAuth registration where user creation and binding need to be atomic.
 // Post-creation tasks (sidebar config, logs, inviter rewards) are handled after the transaction commits.
@@ -753,6 +741,17 @@ func (user *User) InsertWithTx(tx *gorm.DB, inviterId int) error {
 	return withNormalizedEmailLock(tx, user.Email, func(tx *gorm.DB) error {
 		if err := user.prepareForInsert(tx); err != nil {
 			return err
+		}
+		user.InviterId = 0
+		if inviterId > 0 {
+			var inviter User
+			err := lockForUpdate(tx).Select("id", "invitation_disabled").First(&inviter, inviterId).Error
+			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				return err
+			}
+			if err == nil && !inviter.InvitationDisabled {
+				user.InviterId = inviter.Id
+			}
 		}
 		user.Quota = common.QuotaForNewUser
 		user.AffCode = common.GetRandomString(4)
@@ -765,38 +764,6 @@ func (user *User) InsertWithTx(tx *gorm.DB, inviterId int) error {
 
 		return tx.Create(user).Error
 	})
-}
-
-// FinalizeOAuthUserCreation performs post-transaction tasks for OAuth user creation.
-// This should be called after the transaction commits successfully.
-func (user *User) FinalizeOAuthUserCreation(inviterId int) {
-	// 用户创建成功后，根据角色初始化边栏配置
-	var createdUser User
-	if err := DB.Where("id = ?", user.Id).First(&createdUser).Error; err == nil {
-		defaultSidebarConfig := generateDefaultSidebarConfigForRole(createdUser.Role)
-		if defaultSidebarConfig != "" {
-			if err := ModifyUserSetting(createdUser.Id, func(setting *dto.UserSetting) {
-				setting.SidebarModules = defaultSidebarConfig
-			}); err != nil {
-				common.SysError(common.LogText("initialize sidebar for user %d: %v", createdUser.Id, err))
-			}
-			common.SysLog(common.LogText("initialized the sidebar config for new user %s (role: %d)", createdUser.Username, createdUser.Role))
-		}
-	}
-
-	if common.QuotaForNewUser > 0 {
-		RecordLog(user.Id, LogTypeSystem, common.NewMessage("New user sign-up bonus {{quota}}", map[string]any{"quota": logger.FormatQuota(common.QuotaForNewUser)}))
-	}
-	if inviterId != 0 && operation_setting.IsPaymentComplianceConfirmed() {
-		if common.QuotaForInvitee > 0 {
-			_ = IncreaseUserQuota(user.Id, common.QuotaForInvitee, true)
-			RecordLog(user.Id, LogTypeSystem, common.NewMessage("Invitation code bonus {{quota}}", map[string]any{"quota": logger.FormatQuota(common.QuotaForInvitee)}))
-		}
-		if common.QuotaForInviter > 0 {
-			RecordLog(inviterId, LogTypeSystem, common.NewMessage("Bonus for inviting a user {{quota}}", map[string]any{"quota": logger.FormatQuota(common.QuotaForInviter)}))
-			_ = inviteUser(inviterId)
-		}
-	}
 }
 
 func (user *User) Update(updatePassword bool) error {

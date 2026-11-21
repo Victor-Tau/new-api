@@ -19,6 +19,7 @@ import (
 // 英文基线——调用方因此无需在每个埋点处手写句子（避免与 params 重复书写同一份值）。
 var auditContentTemplates = map[string]string{
 	"user.create":               "Created user ${username} (role ${role})",
+	"user.referral_update":      "Updated referral permissions for ${username} (ID: ${id})",
 	"user.update":               "Updated user ${username} (ID: ${id})",
 	"user.delete":               "Deleted user ${username} (ID: ${id})",
 	"user.account_delete":       "Account deletion",

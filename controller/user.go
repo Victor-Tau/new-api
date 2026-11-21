@@ -281,7 +281,6 @@ func Register(c *gin.Context) {
 		Username:    user.Username,
 		Password:    user.Password,
 		DisplayName: user.Username,
-		InviterId:   inviterId,
 		Role:        common.RoleCommonUser, // 明确设置角色为普通用户
 	}
 	emailGroup := ""
@@ -466,6 +465,10 @@ func GetAffCode(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if user.InvitationDisabled {
+		writeAccountStatusError(c, http.StatusForbidden, "Invitation access is disabled")
+		return
+	}
 	if user.AffCode == "" {
 		user.AffCode = common.GetRandomString(4)
 		if err := user.Update(false); err != nil {
@@ -519,6 +522,10 @@ func buildSelfUserData(user *model.User) map[string]any {
 	settingsJSON["record_ip_log"] = common.RawMessage("true")
 	permissions := calculateUserPermissions(user.Role)
 	permissions["admin_permissions"] = authz.Capabilities(user.Id, user.Role)
+	affCode := ""
+	if !user.InvitationDisabled {
+		affCode = user.AffCode
+	}
 	return map[string]any{
 		"id":                user.Id,
 		"username":          user.Username,
@@ -537,7 +544,7 @@ func buildSelfUserData(user *model.User) map[string]any {
 		"quota":             user.Quota,
 		"used_quota":        user.UsedQuota,
 		"request_count":     user.RequestCount,
-		"aff_code":          user.AffCode,
+		"aff_code":          affCode,
 		"aff_count":         user.AffCount,
 		"aff_quota":         user.AffQuota,
 		"aff_history_quota": user.AffHistoryQuota,
@@ -1081,7 +1088,7 @@ func CreateUser(c *gin.Context) {
 			return
 		}
 	}
-	cleanUser.FinishInsert(0)
+	cleanUser.FinishInsert()
 
 	auditParams["username"] = cleanUser.Username
 	recordManageAuditFor(c, cleanUser.Id, "user.create", auditParams)

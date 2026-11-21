@@ -23,6 +23,26 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
 	service.RegisterSystemTaskHandler(systemTaskCleanupHandler{})
+	service.RegisterSystemTaskHandler(referralRebatesHandler{})
+}
+
+type referralRebatesHandler struct{}
+
+func (referralRebatesHandler) Type() string { return model.SystemTaskTypeReferralRebates }
+
+func (referralRebatesHandler) Enabled() bool { return true }
+
+func (referralRebatesHandler) Interval() time.Duration { return time.Minute }
+
+func (referralRebatesHandler) NewPayload() any { return nil }
+
+func (referralRebatesHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	err := model.ReconcileReferralRebates(ctx)
+	status := model.SystemTaskStatusSucceeded
+	if err != nil {
+		status = model.SystemTaskStatusFailed
+	}
+	finishSystemTaskHandler(task, runnerID, status, nil, err)
 }
 
 // systemTaskCleanupHandler deletes, once a day, the finished system tasks

@@ -30,6 +30,7 @@ import { CreemConfirmDialog } from './components/dialogs/creem-confirm-dialog'
 import { PaymentConfirmDialog } from './components/dialogs/payment-confirm-dialog'
 import { TransferDialog } from './components/dialogs/transfer-dialog'
 import { RechargeFormCard } from './components/recharge-form-card'
+import { ReferralDetails } from './components/referral-details'
 import { SubscriptionPlansCard } from './components/subscription-plans-card'
 import { WalletStatsCard } from './components/wallet-stats-card'
 import { DEFAULT_DISCOUNT_RATE, PAYMENT_TYPES } from './constants'
@@ -99,6 +100,10 @@ export function Wallet(props: WalletProps) {
   } = usePayment()
   const {
     affiliateLink,
+    invitationEnabled,
+    permissions: referralPermissions,
+    permissionsError: referralPermissionsError,
+    userId: referralUserId,
     loading: affiliateLoading,
     transferQuota,
     transferring,
@@ -339,15 +344,29 @@ export function Wallet(props: WalletProps) {
               />
             </div>
 
-            <AffiliateRewardsCard
-              user={user}
-              affiliateLink={affiliateLink}
-              onTransfer={() => setTransferDialogOpen(true)}
-              complianceConfirmed={
-                topupInfo?.payment_compliance_confirmed !== false
-              }
-              loading={affiliateLoading}
-            />
+            {invitationEnabled && (
+              <AffiliateRewardsCard
+                user={user}
+                affiliateLink={affiliateLink}
+                onTransfer={() => setTransferDialogOpen(true)}
+                complianceConfirmed={
+                  topupInfo?.payment_compliance_confirmed !== false
+                }
+                loading={affiliateLoading}
+              />
+            )}
+            {referralPermissions && referralUserId !== undefined && (
+              <ReferralDetails
+                key={referralUserId}
+                userId={referralUserId}
+                permissions={referralPermissions}
+              />
+            )}
+            {referralPermissionsError && (
+              <p role='alert' className='text-muted-foreground text-sm'>
+                {t('Failed to load referral permissions')}
+              </p>
+            )}
           </div>
         </SectionPageLayout.Content>
       </SectionPageLayout>

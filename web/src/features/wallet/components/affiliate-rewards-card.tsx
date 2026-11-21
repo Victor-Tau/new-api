@@ -81,11 +81,10 @@ export function AffiliateRewardsCard({
           </div>
         </div>
 
-        <div className='grid grid-cols-3 gap-1.5 text-center'>
+        <div className='grid grid-cols-2 gap-1.5 text-center'>
           {[
             [t('Pending'), formatQuota(user?.aff_quota ?? 0)],
             [t('Total Earned'), formatQuota(user?.aff_history_quota ?? 0)],
-            [t('Invites'), String(user?.aff_count ?? 0)],
           ].map(([label, value]) => (
             <div key={label}>
               <div className='text-muted-foreground truncate text-[10px] font-medium tracking-wider uppercase'>
@@ -99,19 +98,23 @@ export function AffiliateRewardsCard({
         </div>
 
         <div className='flex items-center gap-2'>
-          <Input
-            value={affiliateLink}
-            readOnly
-            className='border-muted bg-background/70 h-9 min-w-0 flex-1 font-mono text-xs'
-          />
-          <CopyButton
-            value={affiliateLink}
-            variant='outline'
-            className='bg-background size-9 shrink-0'
-            iconClassName='size-4'
-            tooltip={t('Copy referral link')}
-            aria-label={t('Copy referral link')}
-          />
+          {affiliateLink && (
+            <>
+              <Input
+                value={affiliateLink}
+                readOnly
+                className='border-muted bg-background/70 h-9 min-w-0 flex-1 font-mono text-xs'
+              />
+              <CopyButton
+                value={affiliateLink}
+                variant='outline'
+                className='bg-background size-9 shrink-0'
+                iconClassName='size-4'
+                tooltip={t('Copy referral link')}
+                aria-label={t('Copy referral link')}
+              />
+            </>
+          )}
           {hasRewards && (
             <Button
               onClick={onTransfer}

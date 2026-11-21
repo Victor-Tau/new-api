@@ -32,6 +32,7 @@ import type {
   ManageUserAction,
   ManageUserQuotaPayload,
   ApiResponse,
+  UserReferralPermissions,
 } from './types'
 
 // A step-up proof is single-use, so the request carrying it must never be
@@ -266,4 +267,26 @@ export async function adminUnbindCustomOAuth(
     securityProofConfig(proofToken)
   )
   return res.data
+}
+
+export async function getUserReferralPermissions(
+  id: number
+): Promise<UserReferralPermissions> {
+  const result = await api.get<
+    ApiResponse<UserReferralPermissions> & { data: UserReferralPermissions }
+  >(`/api/user/${id}/referral`)
+  return requireServerSuccess(result.data).data
+}
+
+export async function updateUserReferralPermissions(
+  id: number,
+  permissions: UserReferralPermissions,
+  proofToken: string
+): Promise<void> {
+  const result = await api.put<ApiResponse>(
+    `/api/user/${id}/referral`,
+    permissions,
+    securityProofConfig(proofToken)
+  )
+  requireServerSuccess(result.data)
 }

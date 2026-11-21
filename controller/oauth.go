@@ -516,7 +516,6 @@ func findOrCreateOAuthUser(c *gin.Context, provider oauth.Provider, oauthUser *o
 	if affiliateCode != "" {
 		inviterId, _ = model.GetUserIdByAffCode(affiliateCode)
 	}
-	user.InviterId = inviterId
 
 	// Use transaction to ensure user creation and OAuth binding are atomic
 	if genericProvider, ok := provider.(*oauth.GenericOAuthProvider); ok {
@@ -544,7 +543,7 @@ func findOrCreateOAuthUser(c *gin.Context, provider oauth.Provider, oauthUser *o
 		}
 
 		// Perform post-transaction tasks (logs, sidebar config, inviter rewards)
-		user.FinalizeOAuthUserCreation(inviterId)
+		user.FinishInsert()
 	} else {
 		// Built-in provider: create user and update provider ID in a transaction
 		err := model.DB.Transaction(func(tx *gorm.DB) error {
@@ -573,7 +572,7 @@ func findOrCreateOAuthUser(c *gin.Context, provider oauth.Provider, oauthUser *o
 		}
 
 		// Perform post-transaction tasks
-		user.FinalizeOAuthUserCreation(inviterId)
+		user.FinishInsert()
 	}
 
 	return user, nil, nil

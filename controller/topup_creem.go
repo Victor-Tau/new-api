@@ -193,7 +193,7 @@ type CreemWebhookEvent struct {
 			SubTotal    int    `json:"sub_total"`
 			TaxAmount   int    `json:"tax_amount"`
 			AmountDue   int    `json:"amount_due"`
-			AmountPaid  int    `json:"amount_paid"`
+			AmountPaid  *int   `json:"amount_paid"`
 			Status      string `json:"status"`
 			Type        string `json:"type"`
 			Transaction string `json:"transaction"`
@@ -328,7 +328,11 @@ func handleCheckoutCompleted(c *gin.Context, event *CreemWebhookEvent) {
 		return
 	}
 
-	logger.LogInfo(c.Request.Context(), common.LogText("Creem payment completed callback trade_no=%s creem_order_id=%s amount_paid=%d currency=%s product_name=%q customer_email=%q customer_name=%q", referenceId, event.Object.Order.Id, event.Object.Order.AmountPaid, event.Object.Order.Currency, event.Object.Product.Name, event.Object.Customer.Email, event.Object.Customer.Name))
+	paidAmount := event.Object.Order.AmountDue
+	if event.Object.Order.AmountPaid != nil {
+		paidAmount = *event.Object.Order.AmountPaid
+	}
+	logger.LogInfo(c.Request.Context(), common.LogText("Creem payment completed callback trade_no=%s creem_order_id=%s amount_paid=%d currency=%s product_name=%q customer_email=%q customer_name=%q", referenceId, event.Object.Order.Id, paidAmount, event.Object.Order.Currency, event.Object.Product.Name, event.Object.Customer.Email, event.Object.Customer.Name))
 
 	// 查询本地订单确认存在
 	topUp := model.GetTopUpByTradeNo(referenceId)
@@ -356,7 +360,8 @@ func handleCheckoutCompleted(c *gin.Context, event *CreemWebhookEvent) {
 		logger.LogWarn(c.Request.Context(), common.LogText("Creem callback customer name is empty trade_no=%s creem_order_id=%s", referenceId, event.Object.Order.Id))
 	}
 
-	err := model.RechargeCreem(referenceId, customerEmail, customerName, c.ClientIP())
+	err := model.RechargeCreem(referenceId, customerEmail, customerName, c.ClientIP(),
+		model.WalletTopUpPaymentFromMinorUnits(int64(paidAmount), event.Object.Order.Currency))
 	if err != nil {
 		logger.LogError(c.Request.Context(), common.LogText("Creem top-up processing failed trade_no=%s creem_order_id=%s client_ip=%s error=%q", referenceId, event.Object.Order.Id, c.ClientIP(), err.Error()))
 		c.AbortWithStatus(http.StatusInternalServerError)

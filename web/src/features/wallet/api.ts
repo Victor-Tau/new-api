@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
 import type {
   RedemptionRequest,
@@ -31,6 +32,8 @@ import type {
   StripePaymentResponse,
   AffiliateCodeResponse,
   AffiliateTransferResponse,
+  ReferralPermissions,
+  ReferralPage,
   BillingHistoryResponse,
   CompleteOrderRequest,
   CreemPaymentRequest,
@@ -245,4 +248,24 @@ export async function completeOrder(
 ): Promise<ApiResponse> {
   const res = await api.post('/api/user/topup/complete', request)
   return res.data
+}
+
+export async function getReferralPermissions(): Promise<ReferralPermissions> {
+  const res = await api.get<
+    ApiResponse<ReferralPermissions> & { data: ReferralPermissions }
+  >('/api/user/referral/permissions')
+  return requireServerSuccess(res.data).data
+}
+
+export async function getReferralPage<T>(
+  resource: 'invitees' | 'rebates',
+  page: number,
+  pageSize: number
+): Promise<ReferralPage<T>> {
+  const res = await api.get<
+    ApiResponse<ReferralPage<T>> & { data: ReferralPage<T> }
+  >(`/api/user/referral/${resource}`, {
+    params: { p: page, page_size: pageSize },
+  })
+  return requireServerSuccess(res.data).data
 }

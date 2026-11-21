@@ -28,6 +28,7 @@ import {
   ShieldAlert,
   Link2,
   CreditCard,
+  Share2,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -61,6 +62,7 @@ import {
 import { getUserActionMessage } from '../lib'
 import type { User } from '../types'
 import { UserBindingDialog } from './dialogs/user-binding-dialog'
+import { UserReferralDialog } from './dialogs/user-referral-dialog'
 import { useUsers } from './users-provider'
 
 const MANAGE_ACTION_TITLES: Record<AdminUserManageAction, string> = {
@@ -86,6 +88,7 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   } = useUsers()
   const [resetPasskeyOpen, setResetPasskeyOpen] = useState(false)
   const [resetTwoFAOpen, setResetTwoFAOpen] = useState(false)
+  const [referralDialogOpen, setReferralDialogOpen] = useState(false)
   const [bindingDialogOpen, setBindingDialogOpen] = useState(false)
   const [subscriptionsDialogOpen, setSubscriptionsDialogOpen] = useState(false)
 
@@ -275,6 +278,18 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
           </DropdownMenuShortcut>
         </DropdownMenuItem>
 
+        <DropdownMenuItem
+          onSelect={(event) => {
+            event.preventDefault()
+            setReferralDialogOpen(true)
+          }}
+        >
+          {t('Referral permissions')}
+          <DropdownMenuShortcut>
+            <Share2 size={16} />
+          </DropdownMenuShortcut>
+        </DropdownMenuItem>
+
         <DropdownMenuSeparator />
 
         <DropdownMenuItem
@@ -347,6 +362,13 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
         userId={user.id}
         onUnbindSuccess={triggerRefresh}
       />
+
+      {referralDialogOpen && (
+        <UserReferralDialog
+          user={user}
+          onClose={() => setReferralDialogOpen(false)}
+        />
+      )}
 
       <UserSubscriptionsDialog
         open={subscriptionsDialogOpen}
