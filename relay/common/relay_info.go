@@ -361,13 +361,9 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 		delete(info.ResponsesUsageInfo.BuiltInTools, info.requestInferredToolKey)
 	}
 	info.requestInferredToolKey = ""
-	if model_setting.GetGlobalSettings().PassThroughRequestEnabled || channelMeta.ChannelSetting.PassThroughBodyEnabled {
-		info.ReasoningEffort = ""
-		info.ReasoningConversion = nil
-	} else {
-		info.ReasoningEffort = reasoningEffortFromRequest(info.Request)
-		info.ReasoningConversion = nil
-	}
+	// Logs use the client's effort even when the request body passes through unchanged.
+	info.ReasoningEffort = reasoningEffortFromRequest(info.Request)
+	info.ReasoningConversion = nil
 
 	// reset some fields based on channel meta
 	// 重置某些字段，例如模型名称等

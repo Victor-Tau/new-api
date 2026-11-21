@@ -255,21 +255,18 @@ func TestInitChannelMetaAppliesAdvancedCustomRoutePassThrough(t *testing.T) {
 		channelSetting  dto.ChannelSettings
 		model           string
 		wantPassThrough bool
-		wantEffort      string
 	}{
 		{
-			name:            "matched route enables pass-through and drops reasoning effort",
+			name:            "matched route enables pass-through",
 			channelType:     constant.ChannelTypeAdvancedCustom,
 			model:           "native-model",
 			wantPassThrough: true,
-			wantEffort:      "",
 		},
 		{
 			name:            "fallback converter route keeps conversion",
 			channelType:     constant.ChannelTypeAdvancedCustom,
 			model:           "other-model",
 			wantPassThrough: false,
-			wantEffort:      "high",
 		},
 		{
 			name:            "channel-level pass-through still applies to converter route",
@@ -277,14 +274,12 @@ func TestInitChannelMetaAppliesAdvancedCustomRoutePassThrough(t *testing.T) {
 			channelSetting:  dto.ChannelSettings{PassThroughBodyEnabled: true},
 			model:           "other-model",
 			wantPassThrough: true,
-			wantEffort:      "",
 		},
 		{
 			name:            "route flag is ignored for other channel types",
 			channelType:     constant.ChannelTypeOpenAI,
 			model:           "native-model",
 			wantPassThrough: false,
-			wantEffort:      "high",
 		},
 	}
 
@@ -303,7 +298,7 @@ func TestInitChannelMetaAppliesAdvancedCustomRoutePassThrough(t *testing.T) {
 			info.InitChannelMeta(ctx)
 
 			assert.Equal(t, tt.wantPassThrough, info.ChannelSetting.PassThroughBodyEnabled)
-			assert.Equal(t, tt.wantEffort, info.ReasoningEffort)
+			assert.Equal(t, "high", info.ReasoningEffort)
 		})
 	}
 }

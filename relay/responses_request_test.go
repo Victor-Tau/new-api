@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/requestplugin"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/QuantumNous/new-api/setting/request_plugin_setting"
@@ -77,7 +78,9 @@ func TestPrepareResponsesRequestDeepSeekEffectiveReasoning(t *testing.T) {
 			wire, err := io.ReadAll(body)
 			require.NoError(t, err)
 			if tc.passthrough || tc.globalPassthrough {
-				assert.JSONEq(t, raw, string(wire))
+				assert.Equal(t, raw, string(wire))
+				other := service.GenerateTextOtherInfo(c, info, 0, 0, 0, 0, 0, 0, 0)
+				assert.Equal(t, tc.effort, other.Snapshot()["reasoning_effort"])
 				return
 			}
 			wantEffort := tc.effort
