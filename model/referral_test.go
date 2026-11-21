@@ -91,11 +91,15 @@ func TestReferralDatabaseMatrix(t *testing.T) {
 
 				if mode == "UPGRADE" {
 					require.True(t, DB.Migrator().HasTable(&User{}))
-					require.False(t, DB.Migrator().HasColumn(&User{}, "InvitationDisabled"))
-					require.False(t, DB.Migrator().HasTable(&ReferralRebate{}))
+					require.False(t, DB.Migrator().HasColumn(&ReferralRebate{}, "AvailableAt"))
+					require.False(t, DB.Migrator().HasTable(&InvitationReward{}))
 					require.NoError(t, DB.Table("users").Create(map[string]any{
 						"username": "referral-legacy", "password": "", "aff_code": "legacy-ref",
-						"quota": 12345,
+						"quota": 12345, "aff_quota": 7500, "aff_history": 9000, "aff_count": 3,
+					}).Error)
+					require.NoError(t, DB.Table("users").Create(map[string]any{
+						"username": "referral-legacy-full", "password": "", "aff_code": "legacy-full",
+						"quota": common.MaxWalletQuota, "aff_quota": 8000, "aff_history": 9000, "aff_count": 3,
 					}).Error)
 				} else {
 					require.False(t, DB.Migrator().HasTable(&User{}))
@@ -103,11 +107,15 @@ func TestReferralDatabaseMatrix(t *testing.T) {
 				for range 2 {
 					require.NoError(t, migrateDB())
 					require.NoError(t, migrateLOGDB())
+					require.NoError(t, MigratePendingInvitationRewards())
 				}
 				if mode == "UPGRADE" {
 					var legacy User
 					require.NoError(t, DB.Where("username = ?", "referral-legacy").First(&legacy).Error)
-					assert.Equal(t, 12345, legacy.Quota)
+					assert.Equal(t, 19845, legacy.Quota)
+					assert.Zero(t, legacy.AffQuota)
+					assert.Equal(t, 9000, legacy.AffHistoryQuota)
+					assert.Equal(t, 3, legacy.AffCount)
 					assert.False(t, legacy.InvitationDisabled)
 					assert.False(t, legacy.ReferralRebateEnabled)
 					assert.Nil(t, legacy.ReferralRebateRate)
@@ -115,15 +123,103 @@ func TestReferralDatabaseMatrix(t *testing.T) {
 					require.NoError(t, err)
 					assert.Equal(t, legacy.Id, id)
 					assert.Error(t, DB.Create(&User{Username: legacy.Username, AffCode: "duplicate-name"}).Error)
+
+					var full User
+					require.NoError(t, DB.Where("username = ?", "referral-legacy-full").First(&full).Error)
+					assert.Equal(t, common.MaxWalletQuota, full.Quota)
+					assert.Zero(t, full.AffQuota)
+					require.NoError(t, DB.Model(&full).UpdateColumn("quota", common.MaxWalletQuota-8000).Error)
+					for range 2 {
+						require.NoError(t, ReconcileInvitationRewards(t.Context()))
+					}
+					require.NoError(t, DB.First(&full, full.Id).Error)
+					assert.Equal(t, common.MaxWalletQuota, full.Quota)
+					assert.Equal(t, 9000, full.AffHistoryQuota)
+					assert.Equal(t, 3, full.AffCount)
 				}
 
 				require.NoError(t, UpdateOption(ReferralDefaultRateOption, "1000"))
 				require.Error(t, UpdateOption(ReferralDefaultRateOption, "10001"))
 				assert.Equal(t, 1000, ReferralDefaultRate())
 				exerciseReferralSettlement(t)
+				exerciseInvitationRewards(t)
 			})
 		}
 	}
+}
+
+func exerciseInvitationRewards(t *testing.T) {
+	t.Helper()
+	oldReward := common.QuotaForInviter
+	t.Cleanup(func() { common.QuotaForInviter = oldReward })
+	require.NoError(t, UpdateOptionsBulk(map[string]string{
+		"QuotaForInviter": "7500", InvitationRewardDelayOption: "0",
+		ReferralRebateDelayOption: "12",
+	}))
+	inviter := User{Username: "reward-inviter", AffCode: "reward-code", Quota: 1000, ReferralRebateEnabled: true}
+	require.NoError(t, DB.Create(&inviter).Error)
+	register := func(username string) User {
+		t.Helper()
+		user := User{Username: username}
+		require.NoError(t, user.Insert(inviter.Id))
+		require.Equal(t, inviter.Id, user.InviterId)
+		return user
+	}
+	assertWallet := func(quota, total, count int) {
+		t.Helper()
+		stored, err := GetUserById(inviter.Id, false)
+		require.NoError(t, err)
+		assert.Equal(t, quota, stored.Quota)
+		assert.Equal(t, total, stored.AffHistoryQuota)
+		assert.Equal(t, count, stored.AffCount)
+		assert.Zero(t, stored.AffQuota)
+	}
+	immediate := register("reward-immediate")
+	assertWallet(8500, 7500, 1)
+	duplicate := User{Username: immediate.Username}
+	require.Error(t, duplicate.Insert(inviter.Id))
+	assertWallet(8500, 7500, 1)
+
+	require.NoError(t, UpdateOption(InvitationRewardDelayOption, "5"))
+	delayed := register("reward-delayed")
+	var reward InvitationReward
+	require.NoError(t, DB.Where("invitee_id = ?", delayed.Id).First(&reward).Error)
+	assert.Equal(t, delayed.CreatedAt+5*3600, reward.AvailableAt)
+	require.Error(t, UpdateOption(InvitationRewardDelayOption, "-1"))
+	require.NoError(t, UpdateOption(InvitationRewardDelayOption, "0"))
+	require.NoError(t, ReconcileInvitationRewards(t.Context()))
+	assertWallet(8500, 7500, 1)
+
+	topUp := TopUp{
+		UserId: delayed.Id, Amount: 20, Money: 90, TradeNo: "reward-delayed-rebate",
+		PaymentProvider: PaymentProviderEpay, Status: common.TopUpStatusPending,
+	}
+	require.NoError(t, topUp.Insert())
+	payment := ParseWalletTopUpPayment("10", "USD")
+	_, err := RechargeEpay(topUp.TradeNo, "alipay", "", payment)
+	require.NoError(t, err)
+	var rebate ReferralRebate
+	require.NoError(t, DB.Where("top_up_id = ?", topUp.Id).First(&rebate).Error)
+	assert.Equal(t, rebate.CreatedAt+12*3600, rebate.AvailableAt)
+	require.NoError(t, ReconcileReferralRebates(t.Context()))
+	assertWallet(8500, 7500, 1)
+
+	now := common.GetTimestamp()
+	require.NoError(t, DB.Model(&reward).UpdateColumn("available_at", now).Error)
+	require.NoError(t, DB.Model(&rebate).UpdateColumn("available_at", now).Error)
+	for range 2 {
+		require.NoError(t, ReconcileInvitationRewards(t.Context()))
+		require.NoError(t, ReconcileReferralRebates(t.Context()))
+	}
+	assertWallet(16000+rebate.Quota, 15000, 2)
+	logs, _, err := GetUserLogs(inviter.Id, LogFilter{Type: LogTypeSystem}, 0, 10)
+	require.NoError(t, err)
+	require.Len(t, logs, 2)
+	assert.Contains(t, logs[0].Content, "Bonus for inviting a user")
+	logs, _, err = GetUserLogs(inviter.Id, LogFilter{Type: LogTypeTopup}, 0, 10)
+	require.NoError(t, err)
+	require.Len(t, logs, 1)
+	assert.Contains(t, logs[0].Content, "Referral rebate / Invited user reward-delayed")
 }
 
 func exerciseReferralSettlement(t *testing.T) {

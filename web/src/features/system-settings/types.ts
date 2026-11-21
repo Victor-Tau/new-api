@@ -275,6 +275,8 @@ export type BillingSettings = {
   QuotaForInviter: number
   ReferralDefaultRebateRate: number
   ReferralRebateExchangeRates: string
+  InvitationRewardDelayHours: number
+  ReferralRebateDelayHours: number
   QuotaForInvitee: number
   TopUpLink: string
   'quota_setting.enable_free_model_pre_consume': boolean

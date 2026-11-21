@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -37,7 +38,7 @@ func (referralRebatesHandler) Interval() time.Duration { return time.Minute }
 func (referralRebatesHandler) NewPayload() any { return nil }
 
 func (referralRebatesHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
-	err := model.ReconcileReferralRebates(ctx)
+	err := errors.Join(model.ReconcileReferralRebates(ctx), model.ReconcileInvitationRewards(ctx))
 	status := model.SystemTaskStatusSucceeded
 	if err != nil {
 		status = model.SystemTaskStatusFailed

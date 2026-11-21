@@ -355,6 +355,7 @@ func migrateDB() error {
 		&Midjourney{},
 		&TopUp{},
 		&ReferralRebate{},
+		&InvitationReward{},
 		&GrowthEvent{},
 		&UserGrowth{},
 		&QuotaData{},

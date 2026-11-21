@@ -1,4 +1,3 @@
-import { useQuery } from '@tanstack/react-query'
 /*
 Copyright (C) 2023-2026 QuantumNous
 
@@ -17,23 +16,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import i18next from 'i18next'
-import { useState, useCallback } from 'react'
-import { toast } from 'sonner'
+import { useQuery } from '@tanstack/react-query'
 
-import { getSelf } from '@/lib/api'
-import { handleServerError } from '@/lib/handle-server-error'
-import {
-  getServerMessage,
-  requireServerSuccess,
-} from '@/lib/server-error-message'
+import { requireServerSuccess } from '@/lib/server-error-message'
 import { useAuthStore } from '@/stores/auth-store'
 
-import {
-  getAffiliateCode,
-  getReferralPermissions,
-  transferAffiliateQuota,
-} from '../api'
+import { getAffiliateCode, getReferralPermissions } from '../api'
 import { generateAffiliateLink } from '../lib'
 
 // ============================================================================
@@ -42,7 +30,6 @@ import { generateAffiliateLink } from '../lib'
 
 export function useAffiliate() {
   const userId = useAuthStore((state) => state.auth.user?.id)
-  const [transferring, setTransferring] = useState(false)
   const permissions = useQuery({
     queryKey: ['referral-permissions', userId],
     queryFn: getReferralPermissions,
@@ -58,38 +45,12 @@ export function useAffiliate() {
   const affiliateLink =
     invitationEnabled && code.data ? generateAffiliateLink(code.data) : ''
 
-  // Transfer affiliate quota to balance
-  const transferQuota = useCallback(async (quota: number): Promise<boolean> => {
-    try {
-      setTransferring(true)
-      const response = await transferAffiliateQuota({ quota })
-
-      if (response.success) {
-        toast.success(
-          getServerMessage(response) || i18next.t('Transfer successful')
-        )
-        await getSelf()
-        return true
-      }
-
-      handleServerError(response, i18next.t('Transfer failed'))
-      return false
-    } catch (_error) {
-      handleServerError(_error, i18next.t('Transfer failed'))
-      return false
-    } finally {
-      setTransferring(false)
-    }
-  }, [])
-
   return {
     affiliateLink,
     invitationEnabled,
     permissions: permissions.isSuccess ? permissions.data : undefined,
     permissionsError: permissions.isError,
     loading: invitationEnabled && code.isPending,
-    transferring,
-    transferQuota,
     userId,
   }
 }

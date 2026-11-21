@@ -101,7 +101,7 @@ type User struct {
 	VIPLevel              *int                       `json:"vip_level" gorm:"column:vip_level;index"`
 	AffCode               string                     `json:"aff_code" gorm:"type:varchar(32);column:aff_code;uniqueIndex"`
 	AffCount              int                        `json:"aff_count" gorm:"type:int;default:0;column:aff_count"`
-	AffQuota              int                        `json:"aff_quota" gorm:"type:int;default:0;column:aff_quota"`           // 邀请剩余额度
+	AffQuota              int                        `json:"aff_quota" gorm:"type:int;default:0;column:aff_quota"`           // Legacy pending rewards, cleared on upgrade.
 	AffHistoryQuota       int                        `json:"aff_history_quota" gorm:"type:int;default:0;column:aff_history"` // 邀请历史额度
 	InviterId             int                        `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
 	InvitationDisabled    bool                       `json:"-"`
@@ -116,6 +116,8 @@ type User struct {
 	LastLoginAt           int64                      `json:"last_login_at" gorm:"default:0;column:last_login_at"`
 	AuthVersion           int64                      `json:"-" gorm:"type:bigint;not null;default:1;column:auth_version"`
 	AdminPermissions      map[string]map[string]bool `json:"admin_permissions,omitempty" gorm:"-:all"`
+
+	inviterRewardQuota int
 }
 
 func (user *User) BeforeCreate(_ *gorm.DB) error {
@@ -584,56 +586,53 @@ func HardDeleteUserById(id int) (int64, error) {
 	return user.HardDelete()
 }
 
-func inviteUser(inviterId int) error {
-	result := DB.Model(&User{}).Where("id = ?", inviterId).Updates(map[string]any{
-		"aff_count":   gorm.Expr("aff_count + ?", 1),
-		"aff_quota":   gorm.Expr("aff_quota + ?", common.QuotaForInviter),
-		"aff_history": gorm.Expr("aff_history + ?", common.QuotaForInviter),
-	})
-	if result.Error != nil {
-		return result.Error
+// MigratePendingInvitationRewards credits legacy rewards and clears the source
+// balance atomically so restarting or retrying the upgrade cannot credit twice.
+func MigratePendingInvitationRewards() error {
+	var pending []User
+	if err := DB.Transaction(func(tx *gorm.DB) error {
+		rewards := tx.Unscoped().Model(&User{}).Where("aff_quota > 0").Session(&gorm.Session{})
+		eligible := rewards.Where("quota <= ? - aff_quota", common.MaxWalletQuota).Session(&gorm.Session{})
+		if common.RedisEnabled {
+			if err := lockForUpdate(eligible).Select("id", "aff_quota").Find(&pending).Error; err != nil {
+				return err
+			}
+		}
+		// MySQL evaluates assignments left to right. Read aff_quota before clearing it.
+		result := eligible.
+			Clauses(clause.Set{
+				{Column: clause.Column{Name: "quota"}, Value: gorm.Expr("quota + aff_quota")},
+				{Column: clause.Column{Name: "aff_quota"}, Value: 0},
+			}).
+			UpdateColumns(map[string]any{})
+		if result.Error != nil {
+			return result.Error
+		}
+		// Queue balances that need more wallet capacity, preserving the totals
+		// recorded when the invitation rewards were originally granted.
+		var deferred []User
+		if err := lockForUpdate(rewards).Select("id", "aff_quota").Find(&deferred).Error; err != nil {
+			return err
+		}
+		now := common.GetTimestamp()
+		for _, user := range deferred {
+			if err := tx.Create(&InvitationReward{
+				InviterId: user.Id, Quota: user.AffQuota, AvailableAt: now,
+			}).Error; err != nil {
+				return err
+			}
+			if err := rewards.Where("id = ?", user.Id).UpdateColumn("aff_quota", 0).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("migrate pending invitation rewards: %w", err)
 	}
-	if result.RowsAffected == 0 {
-		return gorm.ErrRecordNotFound
+	for _, user := range pending {
+		syncCreditUserQuotaCache(user.Id, user.AffQuota, "legacy invitation reward")
 	}
 	return nil
-}
-
-func (user *User) TransferAffQuotaToQuota(quota int) error {
-	// 检查quota是否小于最小额度
-	if float64(quota) < common.QuotaPerUnit {
-		return common.NewMessage("Minimum transfer quota is {{min}}!", map[string]any{"min": logger.FormatQuota(common.QuotaFromFloat(common.QuotaPerUnit))})
-	}
-
-	// 开始数据库事务
-	tx := DB.Begin()
-	if tx.Error != nil {
-		return tx.Error
-	}
-	defer tx.Rollback() // 确保在函数退出时事务能回滚
-
-	// 加锁查询用户以确保数据一致性
-	err := lockForUpdate(tx).First(user, user.Id).Error
-	if err != nil {
-		return err
-	}
-
-	// 再次检查用户的AffQuota是否足够
-	if user.AffQuota < quota {
-		return common.NewMessage("Invitation quota is insufficient!")
-	}
-
-	// 更新用户额度
-	user.AffQuota -= quota
-	user.Quota += quota
-
-	// 保存用户状态
-	if err := tx.Save(user).Error; err != nil {
-		return err
-	}
-
-	// 提交事务
-	return tx.Commit().Error
 }
 
 func (user *User) prepareForInsert(tx *gorm.DB) error {
@@ -702,6 +701,10 @@ func (user *User) Insert(inviterId int) error {
 
 func (user *User) FinishInsert() {
 	inviterId := user.InviterId
+	if reward := user.inviterRewardQuota; reward > 0 {
+		user.inviterRewardQuota = 0
+		afterInvitationRewardCredit(inviterId, reward)
+	}
 	// 用户创建成功后，根据角色初始化边栏配置
 	// 需要重新获取用户以确保有正确的ID和Role
 	var createdUser User
@@ -721,23 +724,17 @@ func (user *User) FinishInsert() {
 	if common.QuotaForNewUser > 0 {
 		RecordLog(user.Id, LogTypeSystem, common.NewMessage("New user sign-up bonus {{quota}}", map[string]any{"quota": logger.FormatQuota(common.QuotaForNewUser)}))
 	}
-	if inviterId != 0 && operation_setting.IsPaymentComplianceConfirmed() {
-		if common.QuotaForInvitee > 0 {
-			_ = IncreaseUserQuota(user.Id, common.QuotaForInvitee, true)
-			RecordLog(user.Id, LogTypeSystem, common.NewMessage("Invitation code bonus {{quota}}", map[string]any{"quota": logger.FormatQuota(common.QuotaForInvitee)}))
-		}
-		if common.QuotaForInviter > 0 {
-			//_ = IncreaseUserQuota(inviterId, common.QuotaForInviter)
-			RecordLog(inviterId, LogTypeSystem, common.NewMessage("Bonus for inviting a user {{quota}}", map[string]any{"quota": logger.FormatQuota(common.QuotaForInviter)}))
-			_ = inviteUser(inviterId)
-		}
+	if inviterId != 0 && operation_setting.IsPaymentComplianceConfirmed() && common.QuotaForInvitee > 0 {
+		_ = IncreaseUserQuota(user.Id, common.QuotaForInvitee, true)
+		RecordLog(user.Id, LogTypeSystem, common.NewMessage("Invitation code bonus {{quota}}", map[string]any{"quota": logger.FormatQuota(common.QuotaForInvitee)}))
 	}
 }
 
 // InsertWithTx inserts a new user within an existing transaction.
 // This is used for OAuth registration where user creation and binding need to be atomic.
-// Post-creation tasks (sidebar config, logs, inviter rewards) are handled after the transaction commits.
+// The inviter's wallet credit commits with the new account. FinishInsert publishes the cache update and logs.
 func (user *User) InsertWithTx(tx *gorm.DB, inviterId int) error {
+	user.inviterRewardQuota = 0
 	return withNormalizedEmailLock(tx, user.Email, func(tx *gorm.DB) error {
 		if err := user.prepareForInsert(tx); err != nil {
 			return err
@@ -762,7 +759,39 @@ func (user *User) InsertWithTx(tx *gorm.DB, inviterId int) error {
 			user.SetSetting(defaultSetting)
 		}
 
-		return tx.Create(user).Error
+		if err := tx.Create(user).Error; err != nil {
+			return err
+		}
+		if user.InviterId == 0 {
+			return nil
+		}
+
+		common.OptionMapRWMutex.RLock()
+		reward := common.QuotaForInviter
+		delay, _ := parseReferralDelay(common.OptionMap[InvitationRewardDelayOption])
+		complianceConfirmed := operation_setting.IsPaymentComplianceConfirmed()
+		common.OptionMapRWMutex.RUnlock()
+		if !complianceConfirmed || reward <= 0 {
+			return nil
+		}
+		if err := common.ValidateWalletQuota(reward); err != nil {
+			return err
+		}
+		entry := InvitationReward{
+			InviteeId: &user.Id, InviterId: user.InviterId, Quota: reward,
+			AvailableAt: user.CreatedAt + delay,
+		}
+		if delay == 0 {
+			credited, err := entry.creditWallet(tx)
+			if err != nil {
+				return err
+			}
+			if credited {
+				user.inviterRewardQuota = reward
+				return nil
+			}
+		}
+		return tx.Create(&entry).Error
 	})
 }
 

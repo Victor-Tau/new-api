@@ -63,8 +63,6 @@ const BILLING_SECTIONS = [
       <QuotaSettingsSection
         defaultValues={{
           QuotaForNewUser: settings.QuotaForNewUser,
-          QuotaForInviter: settings.QuotaForInviter,
-          QuotaForInvitee: settings.QuotaForInvitee,
           TopUpLink: settings.TopUpLink,
           quota_setting: {
             trust_quota_usd: settings['quota_setting.trust_quota_usd'],
@@ -74,10 +72,6 @@ const BILLING_SECTIONS = [
               settings['quota_setting.enable_free_model_pre_consume'],
           },
         }}
-        complianceConfirmed={
-          (settings['payment_setting.compliance_confirmed'] ?? false) &&
-          settings['payment_setting.compliance_terms_version'] === 'v1'
-        }
       />
     ),
   },
@@ -204,11 +198,19 @@ const BILLING_SECTIONS = [
   },
   {
     id: 'referral',
-    titleKey: 'Referral rebates',
+    titleKey: 'Invitations and rebates',
     build: (settings: BillingSettings) => (
       <ReferralSettingsSection
         defaultRateBps={settings.ReferralDefaultRebateRate}
         exchangeRates={settings.ReferralRebateExchangeRates}
+        inviterQuota={settings.QuotaForInviter}
+        inviteeQuota={settings.QuotaForInvitee}
+        invitationDelayHours={settings.InvitationRewardDelayHours}
+        rebateDelayHours={settings.ReferralRebateDelayHours}
+        complianceConfirmed={
+          (settings['payment_setting.compliance_confirmed'] ?? false) &&
+          settings['payment_setting.compliance_terms_version'] === 'v1'
+        }
       />
     ),
   },

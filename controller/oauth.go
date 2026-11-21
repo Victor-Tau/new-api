@@ -542,7 +542,7 @@ func findOrCreateOAuthUser(c *gin.Context, provider oauth.Provider, oauthUser *o
 			return nil, nil, err
 		}
 
-		// Perform post-transaction tasks (logs, sidebar config, inviter rewards)
+		// Perform post-transaction tasks (logs, sidebar config, and cache updates)
 		user.FinishInsert()
 	} else {
 		// Built-in provider: create user and update provider ID in a transaction

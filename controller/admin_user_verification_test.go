@@ -436,3 +436,47 @@ func TestAdminReferralPermissionAndPrivacy(t *testing.T) {
 	assert.Contains(t, permissions.Body.String(), `"rebate_enabled":false`)
 	assert.NotContains(t, permissions.Body.String(), "rate_bps")
 }
+
+func TestReferralRebatesReportsRemainingSeconds(t *testing.T) {
+	_, _, user := setupAdminUserTest(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.ReferralRebate{}))
+	require.NoError(t, model.DB.Model(user).UpdateColumn("referral_rebate_enabled", true).Error)
+
+	now := common.GetTimestamp()
+	due := now + 4500
+	require.NoError(t, model.DB.Create(&[]model.ReferralRebate{
+		{TopUpId: 1, InviterId: user.Id, InviteeUsername: "scheduled", Quota: 5000, AvailableAt: due},
+		{TopUpId: 2, InviterId: user.Id, InviteeUsername: "credited", Quota: 5000, AvailableAt: due, CreditedAt: now},
+		{TopUpId: 3, InviterId: user.Id, InviteeUsername: "due", Quota: 5000, AvailableAt: now - 10},
+		{TopUpId: 4, InviterId: user.Id, InviteeUsername: "no-rate", AvailableAt: due, ExchangeRatePending: true},
+		{TopUpId: 5, InviterId: user.Id, InviteeUsername: "no-rebate", AvailableAt: due},
+	}).Error)
+
+	response := adminUserRequest(http.MethodGet, "/api/user/referral/rebates", "",
+		"", service.AuthIdentity{UserID: user.Id}, common.RoleCommonUser, nil, GetReferralRebates)
+	require.Equal(t, http.StatusOK, response.Code)
+	var result struct {
+		Success bool
+		Data    struct {
+			Items []struct {
+				Username         string `json:"username"`
+				AvailableAt      int64  `json:"available_at"`
+				RemainingSeconds *int64 `json:"remaining_seconds"`
+			}
+		}
+	}
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+	require.True(t, result.Success)
+	require.Len(t, result.Data.Items, 5)
+	for _, item := range result.Data.Items {
+		require.NotNil(t, item.RemainingSeconds, item.Username)
+		if item.Username == "scheduled" {
+			assert.Equal(t, due, item.AvailableAt)
+			assert.Positive(t, *item.RemainingSeconds)
+			assert.GreaterOrEqual(t, *item.RemainingSeconds, due-common.GetTimestamp())
+			assert.LessOrEqual(t, *item.RemainingSeconds, due-now)
+			continue
+		}
+		assert.Zero(t, *item.RemainingSeconds, item.Username)
+	}
+}

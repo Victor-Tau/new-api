@@ -150,6 +150,8 @@ func InitOptionMap() {
 	common.OptionMap["QuotaForNewUser"] = strconv.Itoa(common.QuotaForNewUser)
 	common.OptionMap[ReferralDefaultRateOption] = "0"
 	common.OptionMap[ReferralExchangeRatesOption] = "{}"
+	common.OptionMap[ReferralRebateDelayOption] = "0"
+	common.OptionMap[InvitationRewardDelayOption] = "0"
 	common.OptionMap["QuotaForInviter"] = strconv.Itoa(common.QuotaForInviter)
 	common.OptionMap["QuotaForInvitee"] = strconv.Itoa(common.QuotaForInvitee)
 	common.OptionMap["QuotaRemindEnabled"] = strconv.FormatBool(common.QuotaRemindEnabled)
@@ -250,6 +252,15 @@ func validateOptionValue(key string, value string) error {
 	case ReferralExchangeRatesOption:
 		_, err := parseReferralExchangeRates(value)
 		return err
+	case ReferralRebateDelayOption, InvitationRewardDelayOption:
+		_, err := parseReferralDelay(value)
+		return err
+	case "QuotaForInviter", "QuotaForInvitee":
+		quota, err := strconv.Atoi(value)
+		if err != nil || quota < 0 || common.ValidateWalletQuota(quota) != nil {
+			return common.NewMessage("Invalid parameters")
+		}
+		return nil
 	case vipTierOption:
 		_, err := parseVIPSettings(value)
 		return err
@@ -313,7 +324,8 @@ func validateOptionValue(key string, value string) error {
 
 func UpdateOption(key string, value string) error {
 	if key == vipTierOption || key == emailGroupOption || key == topupRatioOption ||
-		key == ReferralDefaultRateOption || key == ReferralExchangeRatesOption {
+		key == ReferralDefaultRateOption || key == ReferralExchangeRatesOption ||
+		key == ReferralRebateDelayOption || key == InvitationRewardDelayOption {
 		return UpdateOptionsBulk(map[string]string{key: value})
 	}
 	if IsRequestPolicyOption(key) {

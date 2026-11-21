@@ -1658,42 +1658,60 @@
         ]
       }
     },
-    "/api/user/aff_transfer": {
-      "post": {
-        "summary": "转换邀请额度",
-        "deprecated": false,
-        "description": "🔐 需要登录（User权限）",
-        "tags": [
-          "用户管理"
+    "/api/user/referral/rebates": {
+      "get": {
+        "summary": "获取当前用户的返利明细和到账倒计时",
+        "description": "需要登录且已开通返利权限。使用个人访问令牌时需要 wallet:read 权限。",
+        "tags": ["用户管理"],
+        "parameters": [
+          {
+            "in": "query",
+            "name": "p",
+            "schema": { "type": "integer", "default": 1 }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "schema": { "type": "integer", "default": 10, "maximum": 100 }
+          }
         ],
-        "parameters": [],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "quota": {
-                    "type": "integer"
+        "responses": {
+          "200": {
+            "description": "remaining_seconds 由服务端计算。正数表示距最早可到账时间的秒数。已到账、延时已结束、缺少汇率或无可发返利时返回 0。用 credited_at 大于 0 判断是否已到账。",
+            "content": {
+              "application/json": {
+                "example": {
+                  "success": true,
+                  "message": "",
+                  "data": {
+                    "page": 1,
+                    "page_size": 10,
+                    "total": 1,
+                    "items": [
+                      {
+                        "id": 42,
+                        "username": "invitee",
+                        "paid_amount": "20",
+                        "paid_currency": "USD",
+                        "rate_bps": 500,
+                        "rebate_quota": 500000,
+                        "created_at": 1795248000,
+                        "available_at": 1795276800,
+                        "credited_at": 0,
+                        "remaining_seconds": 4500
+                      }
+                    ]
                   }
                 }
               }
             }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "成功",
-            "headers": {}
-          }
+          },
+          "401": { "description": "需要登录" },
+          "403": { "description": "返利权限未开启或访问令牌权限不足" }
         },
         "security": [
-          {
-            "Combination343": []
-          },
-          {
-            "Combination1243": []
-          }
+          { "Combination343": [] },
+          { "Combination1243": [] }
         ]
       }
     },

@@ -29,6 +29,8 @@ const defaultBillingSettings: BillingSettings = {
   QuotaForInviter: 0,
   ReferralDefaultRebateRate: 0,
   ReferralRebateExchangeRates: '{}',
+  InvitationRewardDelayHours: 0,
+  ReferralRebateDelayHours: 0,
   QuotaForInvitee: 0,
   TopUpLink: '',
   'quota_setting.enable_free_model_pre_consume': true,

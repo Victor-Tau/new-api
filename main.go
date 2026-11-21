@@ -384,6 +384,11 @@ func InitResources() error {
 	if err != nil {
 		return err
 	}
+	if common.IsMasterNode {
+		if err := model.MigratePendingInvitationRewards(); err != nil {
+			return err
+		}
+	}
 
 	perfmetrics.Init()
 

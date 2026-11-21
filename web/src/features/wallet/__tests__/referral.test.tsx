@@ -25,6 +25,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import en from '@/i18n/locales/en.json'
 import { api } from '@/lib/api'
 
+import { AffiliateRewardsCard } from '../components/affiliate-rewards-card'
 import { ReferralDetails } from '../components/referral-details'
 import type { ReferralPermissions } from '../types'
 
@@ -40,6 +41,29 @@ beforeEach(async () => {
 })
 
 afterEach(() => vi.restoreAllMocks())
+
+it('shows earned invitation rewards with no transfer action', () => {
+  render(
+    <I18nextProvider i18n={i18n}>
+      <AffiliateRewardsCard
+        affiliateLink='https://example.com/sign-up?aff=abcd'
+        earnedQuota={500000}
+      />
+    </I18nextProvider>
+  )
+  expect(screen.getByText('Total Earned')).toBeVisible()
+  expect(
+    screen.getByText(
+      'Invitation rewards are added to your balance automatically.'
+    )
+  ).toBeVisible()
+  expect(
+    screen.getByRole('button', { name: 'Copy referral link' })
+  ).toBeVisible()
+  expect(
+    screen.queryByRole('button', { name: 'Transfer to Balance' })
+  ).not.toBeInTheDocument()
+})
 
 function renderReferralDetails(permissions: ReferralPermissions) {
   const client = new QueryClient({
@@ -103,6 +127,37 @@ it('shows the effective rate and paid currency with rebate access alone', async 
   expect(screen.getByText('Current rebate rate: 7.5%')).toBeVisible()
   expect(screen.getByText('Credited to wallet')).toBeVisible()
   expect(screen.queryByText('Invited Users')).not.toBeInTheDocument()
+})
+
+it('shows the server countdown in hours and minutes and leaves due rebates pending', async () => {
+  const rebate = {
+    username: 'invitee',
+    paid_amount: '4.25',
+    paid_currency: 'USD',
+    rate_bps: 750,
+    rebate_quota: 159375,
+    created_at: 1,
+    available_at: 7201,
+    credited_at: 0,
+  }
+  vi.spyOn(api, 'get').mockResolvedValue({
+    data: {
+      success: true,
+      data: {
+        total: 3,
+        items: [
+          { ...rebate, id: 1, remaining_seconds: 4500 },
+          { ...rebate, id: 2, remaining_seconds: 30 },
+          { ...rebate, id: 3, remaining_seconds: 0 },
+        ],
+      },
+    },
+  })
+  renderReferralDetails({ invitation_enabled: false, rebate_enabled: true })
+  expect(await screen.findByText('Estimated credit in 1h 15m')).toBeVisible()
+  expect(screen.getByText('Estimated credit in 1m')).toBeVisible()
+  expect(screen.getByText('Pending')).toBeVisible()
+  expect(screen.queryByText('Credited to wallet')).not.toBeInTheDocument()
 })
 
 it('withholds both record requests and panels when both permissions are disabled', () => {

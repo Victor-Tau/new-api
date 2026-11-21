@@ -425,39 +425,6 @@ func GetUser(c *gin.Context) {
 	return
 }
 
-type TransferAffQuotaRequest struct {
-	Quota int `json:"quota" binding:"required"`
-}
-
-func TransferAffQuota(c *gin.Context) {
-	if !requirePaymentCompliance(c) {
-		return
-	}
-
-	id := c.GetInt("id")
-	user, err := model.GetUserById(id, true)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	tran := TransferAffQuotaRequest{}
-	if err := c.ShouldBindJSON(&tran); err != nil {
-		common.ApiError(c, err)
-		return
-	}
-	err = user.TransferAffQuotaToQuota(tran.Quota)
-	var message *common.Message
-	if errors.As(err, &message) {
-		common.ApiError(c, err)
-		return
-	}
-	if err != nil {
-		common.ApiErrorT(c, "Transfer failed {{error}}", map[string]any{"error": err.Error()})
-		return
-	}
-	common.ApiSuccessT(c, "Transfer successful", nil)
-}
-
 func GetAffCode(c *gin.Context) {
 	id := c.GetInt("id")
 	user, err := model.GetUserById(id, true)

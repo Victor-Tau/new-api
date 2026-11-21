@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"regexp"
 	"slices"
 	"strconv"
@@ -19,12 +20,17 @@ import (
 	"gorm.io/gorm"
 )
 
-const ReferralDefaultRateOption = "ReferralDefaultRebateRate"
-const ReferralExchangeRatesOption = "ReferralRebateExchangeRates"
+const (
+	ReferralDefaultRateOption   = "ReferralDefaultRebateRate"
+	ReferralExchangeRatesOption = "ReferralRebateExchangeRates"
+	ReferralRebateDelayOption   = "ReferralRebateDelayHours"
+	InvitationRewardDelayOption = "InvitationRewardDelayHours"
+)
 
 var (
 	ErrInvalidReferralRate          = common.NewMessage("Rebate rate must be between 0% and 100%, with up to two decimal places")
 	ErrInvalidReferralExchangeRates = common.NewMessage("Enter a JSON object of currency codes and positive exchange rates per US dollar")
+	ErrInvalidReferralDelay         = common.NewMessage("Enter a non-negative whole number of hours")
 	walletPaymentAmountPattern      = regexp.MustCompile(`^[0-9]{1,14}(\.[0-9]{1,6})?$`)
 )
 
@@ -38,9 +44,19 @@ type ReferralRebate struct {
 	Rate                int    `json:"rate_bps"`
 	Quota               int    `json:"rebate_quota"`
 	CreatedAt           int64  `json:"created_at"`
+	AvailableAt         int64  `json:"available_at" gorm:"not null;default:0;index"`
 	CreditedAt          int64  `json:"credited_at"`
 	ExchangeRatePending bool   `json:"exchange_rate_pending,omitempty" gorm:"index"`
 	LogPending          bool   `json:"-" gorm:"index"`
+}
+
+type InvitationReward struct {
+	Id          int
+	InviteeId   *int `gorm:"uniqueIndex"` // Nil for rewards already counted on a pre-upgrade wallet.
+	InviterId   int
+	Quota       int   `gorm:"type:bigint"`
+	AvailableAt int64 `gorm:"index:idx_invitation_reward_credit,priority:2"`
+	CreditedAt  int64 `gorm:"not null;default:0;index:idx_invitation_reward_credit,priority:1"`
 }
 
 type ReferralInvitee struct {
@@ -85,6 +101,14 @@ func ParseReferralRate(value string) (int, error) {
 		return 0, ErrInvalidReferralRate
 	}
 	return rate, nil
+}
+
+func parseReferralDelay(value string) (int64, error) {
+	hours, err := strconv.ParseUint(value, 10, 31)
+	if err != nil {
+		return 0, ErrInvalidReferralDelay
+	}
+	return int64(hours) * 3600, nil
 }
 
 func parseReferralExchangeRates(value string) (map[string]decimal.Decimal, error) {
@@ -191,10 +215,14 @@ func settleReferralRebate(tx *gorm.DB, topUp *TopUp, payment WalletTopUpPayment,
 	}
 
 	rate := inviter.EffectiveReferralRebateRate()
+	common.OptionMapRWMutex.RLock()
+	delay, _ := parseReferralDelay(common.OptionMap[ReferralRebateDelayOption])
+	common.OptionMapRWMutex.RUnlock()
 	*rebate = ReferralRebate{
 		TopUpId: topUp.Id, InviterId: inviter.Id, InviteeUsername: invitee.Username,
 		PaidAmount: payment.Amount.String(), PaidCurrency: payment.Currency,
 		Rate: rate, CreatedAt: topUp.CompleteTime,
+		AvailableAt: topUp.CompleteTime + delay,
 	}
 	if rate > 0 {
 		unitsPerDollar := referralExchangeRates()[payment.Currency]
@@ -211,7 +239,7 @@ func settleReferralRebate(tx *gorm.DB, topUp *TopUp, payment WalletTopUpPayment,
 	if err := tx.Create(rebate).Error; err != nil {
 		return err
 	}
-	if rebate.Quota > 0 && inviter.Quota <= common.MaxWalletQuota-rebate.Quota {
+	if delay == 0 && rebate.Quota > 0 && inviter.Quota <= common.MaxWalletQuota-rebate.Quota {
 		return rebate.creditWallet(tx)
 	}
 	return nil
@@ -312,8 +340,7 @@ func publishReferralRebateLog(ctx context.Context, id int) error {
 	})
 }
 
-// ReconcileReferralRebates delivers pending logs and credits any rebates that
-// were recorded while the recipient's wallet had no capacity.
+// ReconcileReferralRebates credits due rebates and delivers their pending logs.
 func ReconcileReferralRebates(ctx context.Context) error {
 	rates := referralExchangeRates()
 	var unconverted []ReferralRebate
@@ -339,7 +366,8 @@ func ReconcileReferralRebates(ctx context.Context) error {
 	var pending []ReferralRebate
 	err := DB.WithContext(ctx).Model(&ReferralRebate{}).
 		Joins("JOIN users ON users.id = referral_rebates.inviter_id AND users.deleted_at IS NULL").
-		Where("referral_rebates.credited_at = 0 AND referral_rebates.quota > 0 AND users.quota <= ? - referral_rebates.quota", common.MaxWalletQuota).
+		Where("referral_rebates.credited_at = 0 AND referral_rebates.available_at <= ? AND referral_rebates.quota > 0 AND users.quota <= ? - referral_rebates.quota",
+			common.GetTimestamp(), common.MaxWalletQuota).
 		Order("referral_rebates.id").Limit(200).Find(&pending).Error
 	if err != nil {
 		return errors.Join(result, err)
@@ -373,6 +401,66 @@ func ReconcileReferralRebates(ctx context.Context) error {
 	}
 	for _, id := range logIds {
 		result = errors.Join(result, publishReferralRebateLog(ctx, id))
+	}
+	return result
+}
+
+func (reward *InvitationReward) creditWallet(tx *gorm.DB) (bool, error) {
+	query := tx.Model(&User{}).Where("id = ? AND quota <= ?", reward.InviterId, common.MaxWalletQuota-reward.Quota)
+	columns := map[string]any{"quota": gorm.Expr("quota + ?", reward.Quota)}
+	if reward.InviteeId != nil {
+		query = query.Where("aff_history <= ?", math.MaxInt64-reward.Quota)
+		columns["aff_count"] = gorm.Expr("aff_count + 1")
+		columns["aff_history"] = gorm.Expr("aff_history + ?", reward.Quota)
+	}
+	result := query.UpdateColumns(columns)
+	return result.RowsAffected == 1, result.Error
+}
+
+func afterInvitationRewardCredit(inviterId, reward int) {
+	syncCreditUserQuotaCache(inviterId, reward, "invitation reward")
+	RecordLog(inviterId, LogTypeSystem, common.NewMessage("Bonus for inviting a user {{quota}}", map[string]any{"quota": logger.FormatQuota(reward)}))
+}
+
+func ReconcileInvitationRewards(ctx context.Context) error {
+	now := common.GetTimestamp()
+	var ids []int
+	err := DB.WithContext(ctx).Model(&InvitationReward{}).
+		Joins("JOIN users ON users.id = invitation_rewards.inviter_id AND users.deleted_at IS NULL").
+		Where("invitation_rewards.credited_at = 0 AND invitation_rewards.available_at <= ? AND users.quota <= ? - invitation_rewards.quota AND (invitation_rewards.invitee_id IS NULL OR users.aff_history <= ? - invitation_rewards.quota)",
+			now, common.MaxWalletQuota, int64(math.MaxInt64)).
+		Order("invitation_rewards.available_at, invitation_rewards.id").Limit(200).
+		Pluck("invitation_rewards.id", &ids).Error
+	if err != nil {
+		return err
+	}
+	var result error
+	for _, id := range ids {
+		var reward InvitationReward
+		credited := false
+		err := DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			if err := lockForUpdate(tx).First(&reward, id).Error; err != nil {
+				return err
+			}
+			if reward.CreditedAt != 0 {
+				return nil
+			}
+			var err error
+			credited, err = reward.creditWallet(tx)
+			if err != nil || !credited {
+				return err
+			}
+			return tx.Model(&reward).UpdateColumn("credited_at", now).Error
+		})
+		if err != nil {
+			result = errors.Join(result, err)
+		} else if credited {
+			if reward.InviteeId == nil {
+				syncCreditUserQuotaCache(reward.InviterId, reward.Quota, "legacy invitation reward")
+			} else {
+				afterInvitationRewardCredit(reward.InviterId, reward.Quota)
+			}
+		}
 	}
 	return result
 }

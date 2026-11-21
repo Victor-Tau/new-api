@@ -16,6 +16,11 @@ type referralPermissions struct {
 	RateBPS           *int `json:"rate_bps,omitempty"`
 }
 
+type referralRebateResponse struct {
+	model.ReferralRebate
+	RemainingSeconds int64 `json:"remaining_seconds"`
+}
+
 func GetSelfReferralPermissions(c *gin.Context) {
 	user, err := model.GetUserById(c.GetInt("id"), false)
 	if err != nil {
@@ -70,8 +75,17 @@ func GetReferralRebates(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	now := common.GetTimestamp()
+	rebates := make([]referralRebateResponse, 0, len(items))
+	for _, item := range items {
+		rebate := referralRebateResponse{ReferralRebate: item}
+		if item.CreditedAt == 0 && item.Quota > 0 && !item.ExchangeRatePending && item.AvailableAt > now {
+			rebate.RemainingSeconds = item.AvailableAt - now
+		}
+		rebates = append(rebates, rebate)
+	}
 	page.SetTotal(int(total))
-	page.SetItems(items)
+	page.SetItems(rebates)
 	common.ApiSuccess(c, page)
 }
 
@@ -167,23 +181,41 @@ func UpdateAdminReferralPermissions(c *gin.Context) {
 
 func UpdateReferralSettings(c *gin.Context) {
 	var req struct {
-		RateBPS       *int   `json:"rate_bps"`
-		ExchangeRates string `json:"exchange_rates"`
+		RateBPS              *int   `json:"rate_bps"`
+		ExchangeRates        string `json:"exchange_rates"`
+		InviterQuota         *int   `json:"inviter_quota"`
+		InviteeQuota         *int   `json:"invitee_quota"`
+		InvitationDelayHours *int   `json:"invitation_delay_hours"`
+		RebateDelayHours     *int   `json:"rebate_delay_hours"`
 	}
 	if err := common.DecodeJson(c.Request.Body, &req); err != nil || req.RateBPS == nil {
 		writeAccountStatusError(c, http.StatusBadRequest, "Invalid parameters")
 		return
 	}
-	if *req.RateBPS > 0 && !requirePaymentCompliance(c) {
+	hasReward := *req.RateBPS > 0 ||
+		(req.InviterQuota != nil && *req.InviterQuota > 0) ||
+		(req.InviteeQuota != nil && *req.InviteeQuota > 0)
+	if hasReward && !requirePaymentCompliance(c) {
 		return
 	}
-	if err := model.UpdateOptionsBulk(map[string]string{
+	options := map[string]string{
 		model.ReferralDefaultRateOption:   strconv.Itoa(*req.RateBPS),
 		model.ReferralExchangeRatesOption: req.ExchangeRates,
-	}); err != nil {
+	}
+	for key, value := range map[string]*int{
+		"QuotaForInviter":                 req.InviterQuota,
+		"QuotaForInvitee":                 req.InviteeQuota,
+		model.InvitationRewardDelayOption: req.InvitationDelayHours,
+		model.ReferralRebateDelayOption:   req.RebateDelayHours,
+	} {
+		if value != nil {
+			options[key] = strconv.Itoa(*value)
+		}
+	}
+	if err := model.UpdateOptionsBulk(options); err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	recordManageAudit(c, "option.update", map[string]any{"key": model.ReferralDefaultRateOption, "rate_bps": *req.RateBPS})
+	recordManageAudit(c, "option.update", map[string]any{"key": model.ReferralDefaultRateOption, "options": options})
 	common.ApiSuccessT(c, "Setting updated successfully", nil)
 }

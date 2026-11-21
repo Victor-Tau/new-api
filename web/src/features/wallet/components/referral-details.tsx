@@ -35,7 +35,7 @@ import {
 } from '@/components/ui/card'
 import { toIntlLocale } from '@/i18n/languages'
 import { formatQuotaWithCurrency } from '@/lib/currency'
-import { formatPercent } from '@/lib/format'
+import { formatNumber, formatPercent } from '@/lib/format'
 
 import { getReferralPage } from '../api'
 import { formatTimestamp } from '../lib/billing'
@@ -101,8 +101,22 @@ export function ReferralDetails(props: ReferralDetailsProps) {
         id: 'status',
         header: t('Status'),
         cell: ({ row }) => {
-          if (row.original.credited_at) return t('Credited to wallet')
-          if (row.original.rebate_quota || row.original.exchange_rate_pending) {
+          const rebate = row.original
+          if (rebate.credited_at) return t('Credited to wallet')
+          const remainingSeconds = rebate.remaining_seconds ?? 0
+          if (remainingSeconds > 0) {
+            const totalMinutes = Math.ceil(remainingSeconds / 60)
+            const hours = Math.floor(totalMinutes / 60)
+            const minutes = totalMinutes % 60
+            const time = [
+              hours > 0 ? `${formatNumber(hours, locale)}${t('h')}` : '',
+              minutes > 0 ? `${formatNumber(minutes, locale)}${t('m')}` : '',
+            ]
+              .filter(Boolean)
+              .join(' ')
+            return t('Estimated credit in {{time}}', { time })
+          }
+          if (rebate.rebate_quota > 0 || rebate.exchange_rate_pending) {
             return t('Pending')
           }
           return '—'
@@ -145,6 +159,13 @@ export function ReferralDetails(props: ReferralDetailsProps) {
               resource='rebates'
               columns={rebateColumns}
               emptyTitle={t('No rebate records yet')}
+              shouldRefresh={(items) =>
+                items.some(
+                  (item) =>
+                    !item.credited_at &&
+                    (item.rebate_quota > 0 || item.exchange_rate_pending)
+                )
+              }
             />
           </CardContent>
         </Card>
@@ -158,6 +179,7 @@ function ReferralTable<T extends { id: number }>(props: {
   resource: 'invitees' | 'rebates'
   columns: ColumnDef<T>[]
   emptyTitle: string
+  shouldRefresh?: (items: T[]) => boolean
 }) {
   const { t } = useTranslation()
   const [pagination, setPagination] = useState({ pageIndex: 0, pageSize: 10 })
@@ -170,6 +192,8 @@ function ReferralTable<T extends { id: number }>(props: {
         pagination.pageSize
       ),
     placeholderData: keepPreviousData,
+    refetchInterval: (query) =>
+      props.shouldRefresh?.(query.state.data?.items ?? []) ? 60_000 : false,
   })
   const { table } = useDataTable({
     data: result.data?.items ?? [],
