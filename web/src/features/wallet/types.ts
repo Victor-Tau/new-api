@@ -302,6 +302,7 @@ export type ReferralRebate = {
   available_at?: number
   remaining_seconds?: number
   credited_at: number
+  cancelled_at?: number
   exchange_rate_pending?: boolean
 }
 

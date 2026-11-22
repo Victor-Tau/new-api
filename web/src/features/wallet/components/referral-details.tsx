@@ -122,6 +122,7 @@ export function ReferralDetails(props: ReferralDetailsProps) {
         cell: ({ row }) => {
           const rebate = row.original
           if (rebate.credited_at) return t('Credited to wallet')
+          if (rebate.cancelled_at) return t('Cancelled')
           const remainingSeconds = rebate.remaining_seconds ?? 0
           if (remainingSeconds > 0) {
             const totalMinutes = Math.ceil(remainingSeconds / 60)
@@ -185,6 +186,7 @@ export function ReferralDetails(props: ReferralDetailsProps) {
                 items.some(
                   (item) =>
                     !item.credited_at &&
+                    !item.cancelled_at &&
                     (item.rebate_quota > 0 || item.exchange_rate_pending)
                 )
               }

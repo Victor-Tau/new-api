@@ -386,6 +386,9 @@ func migrateDB() error {
 	if err != nil {
 		return err
 	}
+	if err := cancelInvitationRewardsForDeletedInvitees(DB); err != nil {
+		return fmt.Errorf("cancel pending invitation rewards for deleted invitees: %w", err)
+	}
 	if err := migrateUserVIPLevels(); err != nil {
 		return err
 	}

@@ -60,12 +60,14 @@ type InvitationReward struct {
 	CreatedAt   int64
 	AvailableAt int64 `gorm:"index:idx_invitation_reward_credit,priority:2"`
 	CreditedAt  int64 `gorm:"not null;default:0;index:idx_invitation_reward_credit,priority:1"`
+	CancelledAt int64 `gorm:"not null;default:0"`
 	LogPending  bool  `gorm:"index"`
 }
 
 type ReferralRebateRecord struct {
 	ReferralRebate
-	RecordType string `json:"record_type"`
+	RecordType  string `json:"record_type"`
+	CancelledAt int64  `json:"cancelled_at,omitempty"`
 }
 
 type ReferralInvitee struct {
@@ -187,14 +189,15 @@ func ListReferralRebates(ctx context.Context, inviterId int, page *common.PageIn
 	rebates := db.Model(&ReferralRebate{}).Where("inviter_id = ?", inviterId).
 		Select(`'topup_rebate' AS record_type, id, top_up_id, redemption_id, redemption_quota,
 			invitee_username, paid_amount, paid_currency, rate, quota, created_at, available_at,
-			credited_at, exchange_rate_pending`)
+			credited_at, exchange_rate_pending, 0 AS cancelled_at`)
 	rewards := db.Model(&InvitationReward{}).Where("invitation_rewards.inviter_id = ?", inviterId).
 		Joins("LEFT JOIN users AS invitee ON invitee.id = invitation_rewards.invitee_id AND invitee.deleted_at IS NULL").
 		Select(`'invitation_reward' AS record_type, invitation_rewards.id, NULL AS top_up_id,
 			NULL AS redemption_id, 0 AS redemption_quota, COALESCE(invitee.username, '') AS invitee_username,
 			'0' AS paid_amount, 'USD' AS paid_currency, 0 AS rate, invitation_rewards.quota,
 			COALESCE(NULLIF(invitation_rewards.created_at, 0), NULLIF(invitee.created_at, 0), invitation_rewards.available_at) AS created_at,
-			invitation_rewards.available_at, invitation_rewards.credited_at, FALSE AS exchange_rate_pending`)
+			invitation_rewards.available_at, invitation_rewards.credited_at, FALSE AS exchange_rate_pending,
+			invitation_rewards.cancelled_at`)
 	if !rebatesEnabled {
 		rebates = rebates.Where("1 = 0")
 	}
@@ -440,6 +443,20 @@ func ReconcileReferralRebates(ctx context.Context) error {
 	return result
 }
 
+func cancelPendingInvitationReward(tx *gorm.DB, inviteeID int) error {
+	return tx.Model(&InvitationReward{}).
+		Where("invitee_id = ? AND credited_at = 0 AND cancelled_at = 0", inviteeID).
+		UpdateColumn("cancelled_at", common.GetTimestamp()).Error
+}
+
+func cancelInvitationRewardsForDeletedInvitees(db *gorm.DB) error {
+	invitees := db.Model(&User{}).Select("1").Where("users.id = invitation_rewards.invitee_id")
+	return db.Model(&InvitationReward{}).
+		Where("credited_at = 0 AND cancelled_at = 0 AND invitee_id IS NOT NULL").
+		Where("NOT EXISTS (?)", invitees).
+		UpdateColumn("cancelled_at", common.GetTimestamp()).Error
+}
+
 func (reward *InvitationReward) creditWallet(tx *gorm.DB) (bool, error) {
 	query := tx.Model(&User{}).Where("id = ? AND quota <= ?", reward.InviterId, common.MaxWalletQuota-reward.Quota)
 	columns := map[string]any{"quota": gorm.Expr("quota + ?", reward.Quota)}
@@ -488,7 +505,8 @@ func ReconcileInvitationRewards(ctx context.Context) error {
 	var ids []int
 	err := DB.WithContext(ctx).Model(&InvitationReward{}).
 		Joins("JOIN users ON users.id = invitation_rewards.inviter_id AND users.deleted_at IS NULL").
-		Where("invitation_rewards.credited_at = 0 AND invitation_rewards.available_at <= ? AND users.quota <= ? - invitation_rewards.quota AND (invitation_rewards.invitee_id IS NULL OR users.aff_history <= ? - invitation_rewards.quota)",
+		Where("invitation_rewards.credited_at = 0 AND invitation_rewards.cancelled_at = 0").
+		Where("invitation_rewards.available_at <= ? AND users.quota <= ? - invitation_rewards.quota AND (invitation_rewards.invitee_id IS NULL OR users.aff_history <= ? - invitation_rewards.quota)",
 			now, common.MaxWalletQuota, int64(math.MaxInt64)).
 		Order("invitation_rewards.available_at, invitation_rewards.id").Limit(200).
 		Pluck("invitation_rewards.id", &ids).Error
@@ -503,7 +521,7 @@ func ReconcileInvitationRewards(ctx context.Context) error {
 			if err := lockForUpdate(tx).First(&reward, id).Error; err != nil {
 				return err
 			}
-			if reward.CreditedAt != 0 {
+			if reward.CreditedAt != 0 || reward.CancelledAt != 0 {
 				return nil
 			}
 			var err error

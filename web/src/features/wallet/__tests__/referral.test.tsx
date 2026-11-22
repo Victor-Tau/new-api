@@ -113,6 +113,31 @@ it('shows masked email and pending rewards when invitation access is the only pe
   ])
 })
 
+it('shows cancelled invitation rewards without an estimated credit time', async () => {
+  vi.spyOn(api, 'get').mockImplementation(async (url) => {
+    const items =
+      url === '/api/user/referral/invitees'
+        ? []
+        : [
+            {
+              id: 1,
+              record_type: 'invitation_reward',
+              username: '',
+              rebate_quota: 500_000,
+              created_at: 1,
+              available_at: 3601,
+              credited_at: 0,
+              cancelled_at: 2,
+            },
+          ]
+    return { data: { success: true, data: { total: items.length, items } } }
+  })
+  renderReferralDetails({ invitation_enabled: true, rebate_enabled: false })
+
+  expect(await screen.findByRole('cell', { name: 'Cancelled' })).toBeVisible()
+  expect(screen.queryByText(/Estimated credit|Pending/)).not.toBeInTheDocument()
+})
+
 it('shows the effective rate and paid currency with rebate access alone', async () => {
   vi.spyOn(api, 'get').mockResolvedValue({
     data: {

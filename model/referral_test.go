@@ -92,9 +92,9 @@ func TestReferralDatabaseMatrix(t *testing.T) {
 
 				var legacyTopUp TopUp
 				var legacyInvitee User
+				var deletedInvitee User
 				if mode == "UPGRADE" {
 					require.True(t, DB.Migrator().HasTable(&User{}))
-					require.False(t, DB.Migrator().HasColumn(&ReferralRebate{}, "RedemptionId"))
 					require.NoError(t, DB.Table("users").Create(map[string]any{
 						"username": "referral-legacy", "password": "", "aff_code": "legacy-ref",
 						"quota": 12345, "aff_quota": 7500, "aff_history": 9000, "aff_count": 3,
@@ -116,15 +116,19 @@ func TestReferralDatabaseMatrix(t *testing.T) {
 						}).Error)
 					}
 					if DB.Migrator().HasTable(&InvitationReward{}) {
-						require.False(t, DB.Migrator().HasColumn(&InvitationReward{}, "LogPending"))
+						require.False(t, DB.Migrator().HasColumn(&InvitationReward{}, "CancelledAt"))
 						var legacy User
 						require.NoError(t, DB.Select("id").First(&legacy, "username = ?", "referral-legacy").Error)
 						legacyInvitee = User{Username: "legacy-reward-invitee", AffCode: "legacy-invitee", InviterId: legacy.Id}
-						require.NoError(t, DB.Create(&legacyInvitee).Error)
-						require.NoError(t, DB.Table("invitation_rewards").Create(map[string]any{
-							"invitee_id": legacyInvitee.Id, "inviter_id": legacy.Id, "quota": 7500,
-							"available_at": legacyInvitee.CreatedAt + 3600,
-						}).Error)
+						deletedInvitee = User{Username: "legacy-deleted-invitee", AffCode: "legacy-deleted", InviterId: legacy.Id}
+						for _, invitee := range []*User{&legacyInvitee, &deletedInvitee} {
+							require.NoError(t, DB.Create(invitee).Error)
+							require.NoError(t, DB.Table("invitation_rewards").Create(map[string]any{
+								"invitee_id": invitee.Id, "inviter_id": legacy.Id, "quota": 7500,
+								"available_at": invitee.CreatedAt + 3600,
+							}).Error)
+						}
+						require.NoError(t, DB.Unscoped().Delete(&deletedInvitee).Error)
 					}
 				} else {
 					require.False(t, DB.Migrator().HasTable(&User{}))
@@ -163,14 +167,23 @@ func TestReferralDatabaseMatrix(t *testing.T) {
 					if legacyInvitee.Id != 0 {
 						records, total, err := ListReferralRebates(t.Context(), legacy.Id, &common.PageInfo{Page: 1, PageSize: 10}, false, true)
 						require.NoError(t, err)
-						require.Len(t, records, 1)
-						assert.EqualValues(t, 1, total)
-						assert.Equal(t, "invitation_reward", records[0].RecordType)
-						assert.Equal(t, legacyInvitee.Username, records[0].InviteeUsername)
-						assert.Equal(t, legacyInvitee.CreatedAt, records[0].CreatedAt)
-						assert.Equal(t, legacyInvitee.CreatedAt+3600, records[0].AvailableAt)
-						assert.Equal(t, 7500, records[0].Quota)
-						assert.Zero(t, records[0].CreditedAt)
+						require.Len(t, records, 2)
+						assert.EqualValues(t, 2, total)
+						for _, record := range records {
+							assert.Equal(t, "invitation_reward", record.RecordType)
+							assert.Equal(t, 7500, record.Quota)
+							assert.Zero(t, record.CreditedAt)
+							if record.InviteeUsername == "" {
+								assert.Positive(t, record.CancelledAt)
+								assert.Equal(t, deletedInvitee.CreatedAt+3600, record.AvailableAt)
+							} else {
+								assert.Zero(t, record.CancelledAt)
+								assert.Equal(t, legacyInvitee.Username, record.InviteeUsername)
+								assert.Equal(t, legacyInvitee.CreatedAt, record.CreatedAt)
+								assert.Equal(t, legacyInvitee.CreatedAt+3600, record.AvailableAt)
+							}
+						}
+						assert.NotEqual(t, records[0].InviteeUsername, records[1].InviteeUsername)
 						require.Error(t, DB.Create(&InvitationReward{InviteeId: &legacyInvitee.Id, InviterId: legacy.Id, Quota: 7500}).Error)
 					}
 
@@ -297,6 +310,37 @@ func exerciseInvitationRewards(t *testing.T) {
 		assert.Contains(t, log.Content, "Referral rebate / Invited user reward-delayed")
 	}
 	assert.Equal(t, 2, invitationLogs)
+
+	_, err = immediate.HardDelete()
+	require.NoError(t, err)
+	require.NoError(t, UpdateOption(InvitationRewardDelayOption, "5"))
+	softDeleted := register("reward-soft-deleted")
+	hardDeleted := register("reward-hard-deleted")
+	_, err = softDeleted.Delete()
+	require.NoError(t, err)
+	_, err = hardDeleted.HardDelete()
+	require.NoError(t, err)
+
+	deletedIDs := []int{softDeleted.Id, hardDeleted.Id}
+	require.NoError(t, DB.Model(&InvitationReward{}).Where("invitee_id IN ?", deletedIDs).UpdateColumn("available_at", now).Error)
+	for range 2 {
+		require.NoError(t, ReconcileInvitationRewards(t.Context()))
+	}
+	assertWallet(16000+rebate.Quota, 15000, 2)
+	logs, _, err = GetUserLogs(inviter.Id, LogFilter{Type: LogTypeTopup}, 0, 10)
+	require.NoError(t, err)
+	assert.Len(t, logs, 3)
+	var deletedRewards []InvitationReward
+	require.NoError(t, DB.Where("invitee_id IN ?", deletedIDs).Find(&deletedRewards).Error)
+	require.Len(t, deletedRewards, 2)
+	for _, cancelled := range deletedRewards {
+		assert.Positive(t, cancelled.CancelledAt)
+		assert.Zero(t, cancelled.CreditedAt)
+	}
+	var creditedReward InvitationReward
+	require.NoError(t, DB.First(&creditedReward, "invitee_id = ?", immediate.Id).Error)
+	assert.Positive(t, creditedReward.CreditedAt)
+	assert.Zero(t, creditedReward.CancelledAt)
 }
 
 func exerciseReferralSettlement(t *testing.T) {

@@ -80,7 +80,7 @@ func GetReferralRebates(c *gin.Context) {
 	rebates := make([]referralRebateResponse, 0, len(items))
 	for _, item := range items {
 		rebate := referralRebateResponse{ReferralRebateRecord: item}
-		if item.CreditedAt == 0 && item.Quota > 0 && !item.ExchangeRatePending && item.AvailableAt > now {
+		if item.CreditedAt == 0 && item.CancelledAt == 0 && item.Quota > 0 && !item.ExchangeRatePending && item.AvailableAt > now {
 			rebate.RemainingSeconds = item.AvailableAt - now
 		}
 		rebates = append(rebates, rebate)
