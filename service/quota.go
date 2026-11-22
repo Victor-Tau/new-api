@@ -496,8 +496,7 @@ func checkAndSendQuotaNotify(relayInfo *relaycommon.RelayInfo, quota int, preCon
 		}
 		lang := userSetting.Language
 		prompt := i18n.Translate(lang, i18n.MsgNotifyQuotaLowTitle)
-		content, values := quotaNotifyContent(lang, userSetting.NotifyType, prompt, logger.FormatQuota(balanceAfter))
-		err := NotifyUser(relayInfo.UserId, relayInfo.UserEmail, relayInfo.UserSetting, dto.NewNotify(dto.NotifyTypeQuotaExceed, prompt, content, values))
+		err := notifyLowQuota(relayInfo.UserId, relayInfo.UserEmail, userSetting, prompt, logger.FormatQuota(balanceAfter))
 		if err != nil {
 			common.SysError(common.LogText("failed to send quota notify to user %d: %s", relayInfo.UserId, err.Error()))
 		}
@@ -523,8 +522,7 @@ func checkAndSendSubscriptionQuotaNotify(relayInfo *relaycommon.RelayInfo) {
 
 		lang := userSetting.Language
 		prompt := i18n.Translate(lang, i18n.MsgNotifySubscriptionQuotaLowTitle)
-		content, values := quotaNotifyContent(lang, userSetting.NotifyType, prompt, logger.FormatQuota(int(remaining)))
-		if err := NotifyUser(relayInfo.UserId, relayInfo.UserEmail, relayInfo.UserSetting, dto.NewNotify(dto.NotifyTypeQuotaExceed, prompt, content, values)); err != nil {
+		if err := notifyLowQuota(relayInfo.UserId, relayInfo.UserEmail, userSetting, prompt, logger.FormatQuota(int(remaining))); err != nil {
 			common.SysError(common.LogText("failed to send subscription quota notify to user %d: %s", relayInfo.UserId, err.Error()))
 		}
 	})
@@ -550,18 +548,24 @@ func quotaReminderDue(userSetting dto.UserSetting, before int64, after int64) bo
 	return float64(before) >= threshold && float64(after) < threshold
 }
 
-// quotaNotifyContent renders a low-quota notice in the user's saved language.
-// Bark and Gotify get plain text; email and webhook get HTML with the top-up
-// link. values stay in the notify payload for webhook receivers.
-func quotaNotifyContent(lang string, notifyType string, prompt string, remaining string) (string, []any) {
-	switch notifyType {
+func notifyLowQuota(userID int, userEmail string, setting dto.UserSetting, prompt, remaining string) error {
+	params := map[string]any{"Prompt": prompt, "Quota": remaining}
+	values := []any{prompt, remaining}
+	var contentKey, emailLink string
+	switch setting.NotifyType {
+	case "", dto.NotifyTypeEmail:
+		contentKey = i18n.MsgNotifyQuotaLowEmailBody
+		emailLink = PaymentReturnURL("/wallet")
 	case dto.NotifyTypeBark:
-		// Bark推送使用简短文本，不支持HTML
-		return i18n.Translate(lang, i18n.MsgNotifyQuotaLowBark, map[string]any{"Prompt": prompt, "Quota": remaining}), []any{prompt, remaining}
+		contentKey = i18n.MsgNotifyQuotaLowBark
 	case dto.NotifyTypeGotify:
-		return i18n.Translate(lang, i18n.MsgNotifyQuotaLowGotify, map[string]any{"Prompt": prompt, "Quota": remaining}), []any{prompt, remaining}
+		contentKey = i18n.MsgNotifyQuotaLowGotify
 	default:
 		topUpLink := PaymentReturnURL("/wallet")
-		return i18n.Translate(lang, i18n.MsgNotifyQuotaLowEmail, map[string]any{"Prompt": prompt, "Quota": remaining, "Link": topUpLink}), []any{prompt, remaining, topUpLink, topUpLink}
+		params["Link"] = topUpLink
+		values = append(values, topUpLink, topUpLink)
+		contentKey = i18n.MsgNotifyQuotaLowEmail
 	}
+	content := i18n.Translate(setting.Language, contentKey, params)
+	return notifyUser(userID, userEmail, setting, dto.NewNotify(dto.NotifyTypeQuotaExceed, prompt, content, values), emailLink)
 }

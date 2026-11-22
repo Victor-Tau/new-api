@@ -2,8 +2,7 @@ package service
 
 import (
 	"errors"
-	"fmt"
-	"html"
+	"math"
 	"slices"
 	"strings"
 	"time"
@@ -89,7 +88,7 @@ func StartEmailBinding(identity AuthIdentity, authorization *model.AuthFlowAutho
 	if err != nil {
 		return nil, err
 	}
-	if err := sendEmailBindingCodes(lang, state, codes); err != nil {
+	if err := sendEmailBindingCodes(lang, state, codes, flow.ExpiresAt); err != nil {
 		// A partially delivered pair must not leave a usable change request.
 		_, _ = model.ConsumeAuthFlow(token, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeEmailBinding, UserId: identity.UserID, SessionId: identity.SessionID})
 		return nil, ErrEmailBindingDelivery
@@ -127,7 +126,7 @@ func ResendAccountEmailBinding(identity AuthIdentity, token string, lang string)
 	if err != nil {
 		return nil, err
 	}
-	if err := sendEmailBindingCodes(lang, *state, codes); err != nil {
+	if err := sendEmailBindingCodes(lang, *state, codes, flow.ExpiresAt); err != nil {
 		_, _ = model.ConsumeAuthFlow(token, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeEmailBinding, UserId: identity.UserID, SessionId: identity.SessionID})
 		return nil, ErrEmailBindingDelivery
 	}
@@ -185,22 +184,35 @@ func generateEmailBindingCodes(requireOld bool) (emailBindingCodes, error) {
 	return codes, nil
 }
 
-func sendEmailBindingCodes(lang string, state model.EmailBindingState, codes emailBindingCodes) error {
-	subject := i18n.Translate(lang, i18n.MsgEmailBindingSubject, map[string]any{"SystemName": common.SystemName})
-	minutes := map[string]any{"Minutes": int(model.EmailBindingTTL / time.Minute)}
-	content := fmt.Sprintf("<p>%s</p><p>%s</p><p>%s</p>",
-		i18n.Translate(lang, i18n.MsgEmailBindingNewIntro),
-		i18n.Translate(lang, i18n.MsgEmailBindingCode, map[string]any{"Code": html.EscapeString(codes.New)}),
-		i18n.Translate(lang, i18n.MsgEmailBindingNewValidity, minutes))
-	if err := common.SendEmail(subject, state.Email, content); err != nil {
-		return err
-	}
-	if codes.Old != "" {
-		content = fmt.Sprintf("<p>%s</p><p>%s</p><p>%s</p>",
-			i18n.Translate(lang, i18n.MsgEmailBindingOldIntro),
-			i18n.Translate(lang, i18n.MsgEmailBindingCode, map[string]any{"Code": html.EscapeString(codes.Old)}),
-			i18n.Translate(lang, i18n.MsgEmailBindingOldValidity, minutes))
-		return common.SendEmail(subject, state.CurrentEmail, content)
+func sendEmailBindingCodes(lang string, state model.EmailBindingState, codes emailBindingCodes, expiresAt time.Time) error {
+	params := map[string]any{"SystemName": common.SystemName}
+	codeLabel := i18n.Translate(lang, i18n.MsgEmailBindingCode)
+	for _, mail := range []struct {
+		recipient, code, subject, heading, intro, advice string
+	}{
+		{state.Email, codes.New, i18n.MsgEmailBindingSubject, i18n.MsgEmailBindingNewHeading, i18n.MsgEmailBindingNewIntro, i18n.MsgEmailBindingNewAdvice},
+		{state.CurrentEmail, codes.Old, i18n.MsgEmailBindingOldSubject, i18n.MsgEmailBindingOldHeading, i18n.MsgEmailBindingOldIntro, i18n.MsgEmailBindingOldAdvice},
+	} {
+		if mail.code == "" {
+			continue
+		}
+		minutes := max(1, int(math.Ceil(time.Until(expiresAt).Minutes())))
+		intro := i18n.Translate(lang, mail.intro)
+		message, err := renderEmail(lang, registrationEmailIllustration, emailContent{
+			Subject:        i18n.Translate(lang, mail.subject, params),
+			Preview:        intro,
+			Heading:        i18n.Translate(lang, mail.heading),
+			BodyLines:      []string{intro, codeLabel},
+			CodeCharacters: strings.Split(mail.code, ""),
+			Validity:       i18n.Translate(lang, i18n.MsgEmailBindingValidity, map[string]any{"Minutes": minutes}),
+			FooterNote:     i18n.Translate(lang, mail.advice),
+		})
+		if err != nil {
+			return err
+		}
+		if err := message.Send(mail.recipient); err != nil {
+			return err
+		}
 	}
 	return nil
 }

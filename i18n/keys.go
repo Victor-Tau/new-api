@@ -71,7 +71,6 @@ const (
 
 	MsgEmailPasswordResetSubject       = "email.password_reset.subject"
 	MsgEmailPasswordResetPreview       = "email.password_reset.preview"
-	MsgEmailPasswordResetSecurityHead  = "email.password_reset.security_header"
 	MsgEmailPasswordResetHeading       = "email.password_reset.heading"
 	MsgEmailPasswordResetGreeting      = "email.password_reset.greeting"
 	MsgEmailPasswordResetRequestPrefix = "email.password_reset.request_prefix"
@@ -83,14 +82,19 @@ const (
 	MsgEmailPasswordResetIgnore        = "email.password_reset.ignore"
 	MsgEmailPasswordResetNotice        = "email.password_reset.security_notice"
 
-	MsgEmailBindingSubject     = "email.binding.subject"
-	MsgEmailBindingNewIntro    = "email.binding.new_intro"
-	MsgEmailBindingOldIntro    = "email.binding.old_intro"
-	MsgEmailBindingCode        = "email.binding.code"
-	MsgEmailBindingNewValidity = "email.binding.new_validity"
-	MsgEmailBindingOldValidity = "email.binding.old_validity"
+	MsgEmailBindingSubject    = "email.binding.subject"
+	MsgEmailBindingOldSubject = "email.binding.old_subject"
+	MsgEmailBindingNewHeading = "email.binding.new_heading"
+	MsgEmailBindingOldHeading = "email.binding.old_heading"
+	MsgEmailBindingNewIntro   = "email.binding.new_intro"
+	MsgEmailBindingOldIntro   = "email.binding.old_intro"
+	MsgEmailBindingCode       = "email.binding.code"
+	MsgEmailBindingValidity   = "email.binding.validity"
+	MsgEmailBindingNewAdvice  = "email.binding.new_advice"
+	MsgEmailBindingOldAdvice  = "email.binding.old_advice"
 
 	MsgEmailSecurityNoticeSubject = "email.security_notice.subject"
+	MsgEmailSecurityNoticeHeading = "email.security_notice.heading"
 	MsgEmailSecurityNoticeChanged = "email.security_notice.changed"
 	MsgEmailSecurityNoticeAdvice  = "email.security_notice.advice"
 
@@ -110,6 +114,8 @@ const (
 	MsgNotifyQuotaLowBark              = "notify.quota_low_bark"
 	MsgNotifyQuotaLowGotify            = "notify.quota_low_gotify"
 	MsgNotifyQuotaLowEmail             = "notify.quota_low_email"
+	MsgNotifyQuotaLowEmailBody         = "notify.quota_low_email_body"
+	MsgNotifyQuotaLowEmailAction       = "notify.quota_low_email_action"
 )
 
 // Channel notices sent to administrators who receive them and to model update

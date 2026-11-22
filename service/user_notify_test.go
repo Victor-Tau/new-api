@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,6 +22,65 @@ import (
 	"github.com/stretchr/testify/require"
 	"gorm.io/gorm"
 )
+
+type notificationEmailTransport func(*http.Request) (*http.Response, error)
+
+func (transport notificationEmailTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return transport(request)
+}
+
+func TestNotificationEmailsUseRegistrationLayout(t *testing.T) {
+	previousOptions, previousTransport := common.OptionMap, http.DefaultTransport
+	previousAddress, previousRedis, previousLimit := system_setting.ServerAddress, common.RedisEnabled, constant.NotifyLimitCount
+	common.OptionMap = map[string]string{"EmailProvider": "resend", "ResendApiKey": "test-key", "ResendFrom": "sender@example.com"}
+	system_setting.ServerAddress, common.RedisEnabled, constant.NotifyLimitCount = "https://dashboard.example.com/gateway", false, 10
+	t.Cleanup(func() {
+		common.OptionMap, http.DefaultTransport = previousOptions, previousTransport
+		system_setting.ServerAddress, common.RedisEnabled, constant.NotifyLimitCount = previousAddress, previousRedis, previousLimit
+	})
+	setting := dto.UserSetting{Language: "en", NotificationEmail: "notice@example.com"}
+	const userID = 87123
+	for _, notificationType := range []string{dto.NotifyTypeQuotaExceed, dto.NotifyTypeChannelUpdate} {
+		key := fmt.Sprintf("%d:%s", userID, notificationType)
+		notifyLimitStore.Delete(key)
+		t.Cleanup(func() { notifyLimitStore.Delete(key) })
+	}
+	type sentEmail struct {
+		To          []string `json:"to"`
+		Subject     string   `json:"subject"`
+		HTML        string   `json:"html"`
+		Attachments []struct {
+			Filename  string `json:"filename"`
+			ContentID string `json:"content_id"`
+		} `json:"attachments"`
+	}
+	var sent []sentEmail
+	http.DefaultTransport = notificationEmailTransport(func(request *http.Request) (*http.Response, error) {
+		var message sentEmail
+		require.NoError(t, common.DecodeJson(request.Body, &message))
+		sent = append(sent, message)
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"id":"test"}`))}, nil
+	})
+	for _, title := range []string{"Your quota is running low", "Your subscription quota is running low"} {
+		require.NoError(t, notifyLowQuota(userID, "account@example.com", setting, title, "$1.25"))
+		message := sent[len(sent)-1]
+		assert.Equal(t, title, message.Subject)
+		assert.Contains(t, message.HTML, "Your remaining quota is $1.25.")
+		assert.Contains(t, message.HTML, `href="https://dashboard.example.com/gateway/wallet"`)
+		assert.Contains(t, message.HTML, ">Top up</a>")
+	}
+	require.NoError(t, NotifyUser(userID, "account@example.com", setting, dto.NewNotify(dto.NotifyTypeChannelUpdate, "Model updates", "Check complete\n- <model>", nil)))
+	require.Len(t, sent, 3)
+	assert.Contains(t, sent[2].HTML, "Check complete<br />- &lt;model&gt;")
+	for _, message := range sent {
+		assert.Equal(t, []string{"notice@example.com"}, message.To)
+		assert.Contains(t, message.HTML, `<html lang="en">`)
+		assert.Contains(t, message.HTML, "This is an automated email. Please do not reply.")
+		require.Len(t, message.Attachments, 1)
+		assert.Equal(t, "email-register.png", message.Attachments[0].Filename)
+		assert.Contains(t, message.HTML, `src="cid:`+message.Attachments[0].ContentID+`"`)
+	}
+}
 
 // A low-balance reminder goes out once, on the charge that takes a wallet or
 // subscription balance below the threshold. A balance already below it earns

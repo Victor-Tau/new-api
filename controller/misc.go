@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -237,16 +236,13 @@ func SendEmailVerification(c *gin.Context) {
 	}
 	// The address may not belong to an account yet, so the mail follows the
 	// request language.
-	message, err := renderAuthEmail("email-register.html", i18n.MsgEmailVerificationSubject, i18n.StatedLang(c), authEmailData{
-		Params:         map[string]any{"Code": code},
-		CodeCharacters: strings.Split(code, ""),
-	})
+	message, err := service.RenderRegistrationEmail(i18n.StatedLang(c), code)
 	if err != nil {
 		logger.LogError(c.Request.Context(), err.Error())
 		common.ApiErrorT(c, "Failed to send verification email")
 		return
 	}
-	err = common.SendEmailWithInlinePNG(message.subject, email, message.html, message.image)
+	err = message.Send(email)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -271,10 +267,10 @@ func SendPasswordResetEmail(c *gin.Context) {
 		if lang == "" {
 			lang = i18n.StatedLang(c)
 		}
-		message, err := renderPasswordResetEmail(lang, email, code)
+		message, err := service.RenderPasswordResetEmail(lang, email, code)
 		if err == nil {
 			common.RegisterVerificationCodeWithKey(email, code, common.PasswordResetPurpose)
-			err = common.SendEmailWithInlinePNG(message.subject, email, message.html, message.image)
+			err = message.Send(email)
 		}
 		if err != nil {
 			logger.LogError(c.Request.Context(), common.LogText("failed to send password reset email to %s: %s", email, err.Error()))

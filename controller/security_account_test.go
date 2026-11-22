@@ -11,9 +11,12 @@ import (
 	"encoding/pem"
 	"errors"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/mail"
 	"net/textproto"
 	"regexp"
 	"strings"
@@ -320,17 +323,52 @@ func (mailbox *securityMailbox) receive(connection net.Conn) {
 	}
 }
 
-func (mailbox *securityMailbox) code(t *testing.T, receiver string) string {
+func (mailbox *securityMailbox) htmlBodies(t *testing.T, receiver string) []string {
 	t.Helper()
 	mailbox.mutex.Lock()
 	defer mailbox.mutex.Unlock()
-	for index := len(mailbox.mail[receiver]) - 1; index >= 0; index-- {
-		match := regexp.MustCompile(`<strong>([A-Z0-9]{6})</strong>`).FindStringSubmatch(mailbox.mail[receiver][index])
-		if len(match) == 2 {
-			require.Regexp(t, `[A-Z]`, match[1])
-			require.Regexp(t, `[0-9]`, match[1])
-			return match[1]
+	bodies := make([]string, 0, len(mailbox.mail[receiver]))
+	for _, raw := range mailbox.mail[receiver] {
+		message, err := mail.ReadMessage(strings.NewReader(raw))
+		require.NoError(t, err)
+		mediaType, params, err := mime.ParseMediaType(message.Header.Get("Content-Type"))
+		require.NoError(t, err)
+		require.Equal(t, "multipart/related", mediaType)
+		parts := multipart.NewReader(message.Body, params["boundary"])
+		bodyPart, err := parts.NextPart()
+		require.NoError(t, err)
+		assert.Equal(t, "text/html; charset=UTF-8", bodyPart.Header.Get("Content-Type"))
+		body, err := io.ReadAll(bodyPart)
+		require.NoError(t, err)
+		image, err := parts.NextPart()
+		require.NoError(t, err)
+		assert.Equal(t, "image/png", image.Header.Get("Content-Type"))
+		id := strings.Trim(image.Header.Get("Content-Id"), "<>")
+		require.NotEmpty(t, id)
+		assert.Contains(t, string(body), `src="cid:`+id+`"`)
+		bodies = append(bodies, string(body))
+	}
+	return bodies
+}
+
+func (mailbox *securityMailbox) code(t *testing.T, receiver string) string {
+	t.Helper()
+	cells := regexp.MustCompile(`>([A-Z0-9])</td>`)
+	bodies := mailbox.htmlBodies(t, receiver)
+	for index := len(bodies) - 1; index >= 0; index-- {
+		matches := cells.FindAllStringSubmatch(bodies[index], -1)
+		if len(matches) == 0 {
+			continue
 		}
+		require.Len(t, matches, 6)
+		var code strings.Builder
+		for _, match := range matches {
+			code.WriteString(match[1])
+		}
+		issued := code.String()
+		require.Regexp(t, `[A-Z]`, issued)
+		require.Regexp(t, `[0-9]`, issued)
+		return issued
 	}
 	t.Fatalf("no verification email delivered to %s", receiver)
 	return ""
@@ -628,6 +666,7 @@ func TestSecurityAccountEmailConfirmationAndAudit(t *testing.T) {
 			}
 			if flow.OldEmailRequired {
 				oldCode = mailbox.code(t, previous)
+				assert.NotEqual(t, newCode, oldCode)
 				_, err := service.FinishEmailBinding(identity, flow.FlowToken, newCode, "")
 				assert.ErrorIs(t, err, model.ErrEmailBindingCodeInvalid)
 				stored, err := model.GetUserById(user.Id, false)
@@ -675,10 +714,14 @@ func TestSecurityAccountEmailResendAndAttemptLimit(t *testing.T) {
 	state.ResendAt = time.Now().Add(-time.Second).Unix()
 	payload, err := common.Marshal(state)
 	require.NoError(t, err)
-	require.NoError(t, model.DB.Model(stored).Update("payload", string(payload)).Error)
-	replacement, err := service.ResendAccountEmailBinding(identity, flow.FlowToken, "")
+	expiresAt := time.Now().Add(2*time.Minute - time.Second).Truncate(time.Second)
+	require.NoError(t, model.DB.Model(stored).Updates(map[string]any{"payload": string(payload), "expires_at": expiresAt}).Error)
+	replacement, err := service.ResendAccountEmailBinding(identity, flow.FlowToken, "en")
 	require.NoError(t, err)
-	assert.Equal(t, flow.ExpiresAt, replacement.ExpiresAt)
+	assert.Equal(t, expiresAt.Unix(), replacement.ExpiresAt)
+	bodies := mailbox.htmlBodies(t, flow.Email)
+	require.Len(t, bodies, 2)
+	assert.Contains(t, bodies[1], "within 2 minutes")
 	_, state, err = model.GetEmailBinding(identity, flow.FlowToken)
 	require.NoError(t, err)
 	assert.Equal(t, 1, state.FailedAttempts)
@@ -703,9 +746,7 @@ func TestSecurityAccountMailsFollowTheOwnersLanguage(t *testing.T) {
 	user, identity := setupSecurityEnrollmentTest(t)
 	mailbox := newSecurityMailbox(t)
 	mails := func(receiver string) string {
-		mailbox.mutex.Lock()
-		defer mailbox.mutex.Unlock()
-		return strings.Join(mailbox.mail[receiver], "\n")
+		return strings.Join(mailbox.htmlBodies(t, receiver), "\n")
 	}
 	saveLanguage := func(language string) {
 		setting, err := common.Marshal(dto.UserSetting{Language: language})
@@ -716,7 +757,8 @@ func TestSecurityAccountMailsFollowTheOwnersLanguage(t *testing.T) {
 	saveLanguage("zhCN")
 	require.NoError(t, model.DB.Model(user).Update("email", "previous@example.com").Error)
 	flow := startSecurityEmailBinding(t, identity, "new@example.com", service.VerificationMethodPassword)
-	request, err := common.Marshal(map[string]string{"flow_token": flow.FlowToken, "new_code": mailbox.code(t, flow.Email), "old_code": mailbox.code(t, "previous@example.com")})
+	newCode, oldCode := mailbox.code(t, flow.Email), mailbox.code(t, "previous@example.com")
+	request, err := common.Marshal(map[string]string{"flow_token": flow.FlowToken, "new_code": newCode, "old_code": oldCode})
 	require.NoError(t, err)
 	response := securityEnrollmentRequest("POST", "/api/oauth/email/bind", string(request), "", identity, EmailBind)
 	require.Contains(t, response.Body.String(), `"success":true`)
@@ -724,6 +766,17 @@ func TestSecurityAccountMailsFollowTheOwnersLanguage(t *testing.T) {
 	assert.Contains(t, mails("new@example.com"), "您的账户安全设置有变动：邮箱地址已确认。")
 	assert.Contains(t, mails("previous@example.com"), "您的账户正在申请更换邮箱地址，请确认替换当前邮箱。")
 	assert.Contains(t, mails("previous@example.com"), "您的账户安全设置有变动：邮箱地址已更换。")
+	for _, recipient := range []string{flow.Email, "previous@example.com"} {
+		bodies := mailbox.htmlBodies(t, recipient)
+		require.Len(t, bodies, 2)
+		assert.Contains(t, bodies[0], `<html lang="zh-CN">`)
+		assert.Contains(t, bodies[1], `<html lang="zh-CN">`)
+		assert.Contains(t, bodies[1], "账户安全提醒")
+		assert.NotRegexp(t, `>[A-Z0-9]</td>`, bodies[1])
+		for _, secret := range []string{flow.FlowToken, newCode, oldCode} {
+			assert.NotContains(t, bodies[1], secret)
+		}
+	}
 
 	for _, tc := range []struct {
 		name, saved, acceptLanguage, receiver, want string

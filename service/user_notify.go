@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/system_setting"
@@ -66,6 +67,10 @@ func notifyAdmins(notifyType string, receives func(role int, setting dto.UserSet
 }
 
 func NotifyUser(userId int, userEmail string, userSetting dto.UserSetting, data dto.Notify) error {
+	return notifyUser(userId, userEmail, userSetting, data, "")
+}
+
+func notifyUser(userId int, userEmail string, userSetting dto.UserSetting, data dto.Notify, emailLink string) error {
 	notifyType := userSetting.NotifyType
 	if notifyType == "" {
 		notifyType = dto.NotifyTypeEmail
@@ -92,7 +97,7 @@ func NotifyUser(userId int, userEmail string, userSetting dto.UserSetting, data 
 			common.SysLog(common.LogText("user %d has no email, skip sending email", userId))
 			return nil
 		}
-		return sendEmailNotify(emailToUse, data)
+		return sendEmailNotify(userSetting.Language, emailToUse, data, emailLink)
 	case dto.NotifyTypeWebhook:
 		webhookURLStr := userSetting.WebhookUrl
 		if webhookURLStr == "" {
@@ -122,14 +127,23 @@ func NotifyUser(userId int, userEmail string, userSetting dto.UserSetting, data 
 	return nil
 }
 
-func sendEmailNotify(userEmail string, data dto.Notify) error {
+func sendEmailNotify(lang, userEmail string, data dto.Notify, link string) error {
 	// make email content
 	content := data.Content
 	// 处理占位符
 	for _, value := range data.Values {
 		content = strings.Replace(content, dto.ContentValueParam, fmt.Sprintf("%v", value), 1)
 	}
-	return common.SendEmail(data.Title, userEmail, content)
+	email := emailContent{Subject: data.Title, Heading: data.Title, BodyLines: strings.Split(content, "\n")}
+	if link != "" {
+		email.ActionURL = link
+		email.ActionLabel = i18n.Translate(lang, i18n.MsgNotifyQuotaLowEmailAction)
+	}
+	message, err := renderEmail(lang, registrationEmailIllustration, email)
+	if err != nil {
+		return err
+	}
+	return message.Send(userEmail)
 }
 
 func sendBarkNotify(barkURL string, data dto.Notify) error {

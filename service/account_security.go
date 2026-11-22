@@ -1,9 +1,6 @@
 package service
 
 import (
-	"fmt"
-	"html"
-
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
@@ -48,10 +45,15 @@ func NotifyAccountSecurityChange(lang, email, eventKey string, eventArgs ...map[
 	if email == "" {
 		return nil
 	}
-	event := html.EscapeString(i18n.Translate(lang, eventKey, eventArgs...))
-	subject := i18n.Translate(lang, i18n.MsgEmailSecurityNoticeSubject, map[string]any{"SystemName": common.SystemName})
-	content := fmt.Sprintf("<p>%s</p><p>%s</p>",
-		i18n.Translate(lang, i18n.MsgEmailSecurityNoticeChanged, map[string]any{"Event": event}),
-		i18n.Translate(lang, i18n.MsgEmailSecurityNoticeAdvice))
-	return common.SendEmail(subject, email, content)
+	event := i18n.Translate(lang, eventKey, eventArgs...)
+	message, err := renderEmail(lang, registrationEmailIllustration, emailContent{
+		Subject:    i18n.Translate(lang, i18n.MsgEmailSecurityNoticeSubject, map[string]any{"SystemName": common.SystemName}),
+		Heading:    i18n.Translate(lang, i18n.MsgEmailSecurityNoticeHeading),
+		BodyLines:  []string{i18n.Translate(lang, i18n.MsgEmailSecurityNoticeChanged, map[string]any{"Event": event})},
+		FooterNote: i18n.Translate(lang, i18n.MsgEmailSecurityNoticeAdvice),
+	})
+	if err != nil {
+		return err
+	}
+	return message.Send(email)
 }
