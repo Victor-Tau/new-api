@@ -118,6 +118,7 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"DELETE /api/user/:id/bindings/:binding_type":      accessTokenScopeRule("user:write"),
 	"GET /api/user/:id/referral":                       accessTokenScopeRule("user:read"),
 	"PUT /api/user/:id/referral":                       accessTokenScopeRule("user:write"),
+	"PUT /api/user/:id/growth":                         accessTokenSessionRule,
 	"GET /api/user/:id":                                accessTokenScopeRule("user:read"),
 	"POST /api/user/":                                  accessTokenScopeRule("user:write"),
 	"POST /api/user/manage":                            accessTokenScopeRule("user:write"),

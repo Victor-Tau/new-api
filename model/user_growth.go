@@ -16,6 +16,10 @@ const growthBackfillKey = "_internal.GrowthEventsBackfillV1"
 const vipLevelBackfillKey = "_internal.UserVIPLevelsV1"
 const growthTopup = "topup"
 const growthRedemption = "redemption"
+const growthAdminAdjustment = "admin_adjustment"
+
+var ErrInvalidGrowthAmount = errors.New("invalid VIP growth amount")
+var ErrUserGrowthPermission = errors.New("cannot adjust VIP growth for this user role")
 
 type GrowthEvent struct {
 	Id        int64  `json:"id"`
@@ -68,6 +72,15 @@ func recordGrowthCredit(tx *gorm.DB, userId int, quota int, source, refId string
 }
 
 func rebuildUserGrowth(tx *gorm.DB, userId int, settings VIPSettings, now int64) (UserGrowth, error) {
+	growth, err := calculateUserGrowth(tx, userId, settings, now)
+	if err != nil {
+		return growth, err
+	}
+	growth.Quota = max(0, growth.Quota)
+	return growth, saveUserGrowth(tx, growth)
+}
+
+func calculateUserGrowth(tx *gorm.DB, userId int, settings VIPSettings, now int64) (UserGrowth, error) {
 	growth := UserGrowth{
 		UserId: userId, WindowDays: settings.WindowDays, WindowStart: settings.windowStart(now),
 		ConfigVersion: settings.version, TierPending: true,
@@ -82,15 +95,112 @@ func rebuildUserGrowth(tx *gorm.DB, userId int, settings VIPSettings, now int64)
 		Scan(&totals).Error; err != nil {
 		return growth, err
 	}
-	growth.Quota = max(0, totals.Quota)
+	growth.Quota = totals.Quota
 	if totals.First != nil {
 		expiry := *totals.First + int64(settings.WindowDays)*86400 + 1
 		growth.NextExpiry = &expiry
 	}
-	return growth, tx.Clauses(clause.OnConflict{
+	return growth, nil
+}
+
+func saveUserGrowth(tx *gorm.DB, growth UserGrowth) error {
+	return tx.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "user_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{"quota", "window_days", "window_start", "config_version", "next_expiry", "tier_pending"}),
 	}).Create(&growth).Error
+}
+
+// GetUserGrowthAmounts returns the current window totals for a page of users.
+func GetUserGrowthAmounts(userIDs []int) (map[int]float64, error) {
+	amounts := make(map[int]float64, len(userIDs))
+	if len(userIDs) == 0 {
+		return amounts, nil
+	}
+	var totals []struct {
+		UserID int
+		Quota  int64
+	}
+	windowStart := CurrentVIPSettings().windowStart(common.GetTimestamp())
+	err := DB.Model(&GrowthEvent{}).Where("user_id IN ? AND created_at >= ?", userIDs, windowStart).
+		Select("user_id, SUM(quota) AS quota").Group("user_id").Scan(&totals).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, total := range totals {
+		amounts[total.UserID] = GrowthAmount(max(0, total.Quota)).InexactFloat64()
+	}
+	return amounts, nil
+}
+
+type UserGrowthAdjustment struct {
+	Username string
+	Before   float64
+	Amount   float64
+	Group    string
+}
+
+func AdjustUserGrowth(userID, operatorRole int, amount decimal.Decimal) (UserGrowthAdjustment, error) {
+	var adjustment UserGrowthAdjustment
+	if userID <= 0 || amount.IsNegative() || !amount.Equal(amount.Round(2)) {
+		return adjustment, ErrInvalidGrowthAmount
+	}
+	targetQuota, err := common.WalletQuotaFromDecimalStrict(amount.Mul(decimal.NewFromFloat(common.QuotaPerUnit)))
+	if err != nil {
+		return adjustment, ErrInvalidGrowthAmount
+	}
+
+	var originalGroup string
+	err = DB.Transaction(func(tx *gorm.DB) error {
+		user, err := lockUserForGrowth(tx, userID)
+		if err != nil {
+			return err
+		}
+		if operatorRole < common.RoleAdminUser || (operatorRole != common.RoleRootUser && operatorRole <= user.Role) {
+			return ErrUserGrowthPermission
+		}
+		originalGroup = user.Group
+		settings := CurrentVIPSettings()
+		now := common.GetTimestamp()
+		growth, err := calculateUserGrowth(tx, userID, settings, now)
+		if err != nil {
+			return err
+		}
+		beforeQuota := max(0, growth.Quota)
+		if beforeQuota != int64(targetQuota) {
+			// Use the raw total for the difference so adjustments still reach the
+			// requested amount when the sum of earlier events has fallen below zero.
+			delta := decimal.NewFromInt(int64(targetQuota)).Sub(decimal.NewFromInt(growth.Quota)).BigInt()
+			if !delta.IsInt64() {
+				return ErrInvalidGrowthAmount
+			}
+			event := GrowthEvent{UserId: userID, Quota: delta.Int64(), Source: growthAdminAdjustment, RefId: common.GetUUID(), CreatedAt: now}
+			if err := tx.Create(&event).Error; err != nil {
+				return err
+			}
+			growth.Quota = int64(targetQuota)
+			expiry := now + int64(settings.WindowDays)*86400 + 1
+			if growth.NextExpiry == nil || expiry < *growth.NextExpiry {
+				growth.NextExpiry = &expiry
+			}
+			if err := saveUserGrowth(tx, growth); err != nil {
+				return err
+			}
+			if err := applyUserGrowthTier(tx, &user, growth, settings, true); err != nil {
+				return err
+			}
+		}
+		adjustment = UserGrowthAdjustment{
+			Username: user.Username,
+			Before:   GrowthAmount(beforeQuota).InexactFloat64(),
+			Amount:   GrowthAmount(max(0, growth.Quota)).InexactFloat64(),
+			Group:    user.Group,
+		}
+		return nil
+	})
+	if err == nil {
+		publishUserGrowthGroupChange(userID, originalGroup, adjustment.Group)
+	}
+	return adjustment, err
 }
 
 func GetUserVIPLevel(userId int) (*int, error) {
@@ -135,14 +245,7 @@ func refreshUserTierAfterCredit(userId int) {
 func reevaluateUserTier(userId int, maintenance bool) error {
 	var from, to string
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		// Acquire the same user lock as a credit. This also starts SQLite as a
-		// writer, before any read can establish a stale snapshot.
-		if err := tx.Model(&User{}).Where("id = ?", userId).
-			UpdateColumn("quota", gorm.Expr("quota")).Error; err != nil {
-			return err
-		}
-		var user User
-		err := tx.Select("id", "group", "vip_level").First(&user, userId).Error
+		user, err := lockUserForGrowth(tx, userId)
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil
 		}
@@ -163,41 +266,67 @@ func reevaluateUserTier(userId int, maintenance bool) error {
 				return err
 			}
 		}
-		if growth.ConfigVersion != settings.version {
-			return nil
+		from = user.Group
+		if err := applyUserGrowthTier(tx, &user, growth, settings, maintenance); err != nil {
+			return err
 		}
-		eligible := settings.tierForQuota(growth.Quota).Level
-		if settings.Enabled && user.VIPLevel != nil && eligible != *user.VIPLevel {
-			if !maintenance && eligible < *user.VIPLevel {
-				return nil
-			}
-			_, special, ok := common.SplitUserGroup(user.Group)
-			if !ok {
-				return nil
-			}
-			target := common.ComposeUserGroup(eligible, special)
-			result := tx.Model(&User{}).Where("id = ? AND "+commonGroupCol+" = ?", userId, user.Group).
-				Updates(userGroupColumns(target))
-			if result.Error != nil {
-				return result.Error
-			}
-			if result.RowsAffected == 0 {
-				return nil
-			}
-			from, to = user.Group, target
-		}
-		return tx.Model(&UserGrowth{}).Where("user_id = ?", userId).Update("tier_pending", false).Error
+		to = user.Group
+		return nil
 	})
 	if err != nil {
 		return err
 	}
-	if to != "" {
-		if err := RefreshUserGroupCache(userId); err != nil {
-			common.SysError(common.LogText("refresh VIP group cache for user %d: %v", userId, err))
-		}
-		RecordLog(userId, LogTypeSystem, common.NewMessage("Membership changed from {{from}} to {{to}}", map[string]any{"from": from, "to": to}))
-	}
+	publishUserGrowthGroupChange(userId, from, to)
 	return nil
+}
+
+func lockUserForGrowth(tx *gorm.DB, userID int) (User, error) {
+	var user User
+	// Start SQLite as a writer before reading events so concurrent credits
+	// and adjustments take the same lock without a stale read snapshot.
+	if common.UsingMainDatabase(common.DatabaseTypeSQLite) {
+		if err := tx.Model(&User{}).Where("id = ?", userID).
+			UpdateColumn("vip_level", gorm.Expr("vip_level")).Error; err != nil {
+			return user, err
+		}
+	}
+	err := lockForUpdate(tx).Select("id", "username", "role", "group", "vip_level").First(&user, userID).Error
+	return user, err
+}
+
+func applyUserGrowthTier(tx *gorm.DB, user *User, growth UserGrowth, settings VIPSettings, allowDowngrade bool) error {
+	if growth.ConfigVersion != settings.version {
+		return nil
+	}
+	eligible := settings.tierForQuota(growth.Quota).Level
+	if settings.Enabled && user.VIPLevel != nil && eligible != *user.VIPLevel {
+		if !allowDowngrade && eligible < *user.VIPLevel {
+			return nil
+		}
+		_, special, ok := common.SplitUserGroup(user.Group)
+		if !ok {
+			return nil
+		}
+		target := common.ComposeUserGroup(eligible, special)
+		result := tx.Model(&User{}).Where("id = ?", user.Id).
+			Where(clause.Eq{Column: clause.Column{Name: "group"}, Value: user.Group}).
+			Updates(userGroupColumns(target))
+		if result.Error != nil || result.RowsAffected == 0 {
+			return result.Error
+		}
+		user.Group = target
+	}
+	return tx.Model(&UserGrowth{}).Where("user_id = ?", user.Id).Update("tier_pending", false).Error
+}
+
+func publishUserGrowthGroupChange(userID int, from, to string) {
+	if from == to {
+		return
+	}
+	if err := RefreshUserGroupCache(userID); err != nil {
+		common.SysError(common.LogText("refresh VIP group cache for user %d: %v", userID, err))
+	}
+	RecordLog(userID, LogTypeSystem, common.NewMessage("Membership changed from {{from}} to {{to}}", map[string]any{"from": from, "to": to}))
 }
 
 func RefreshUserGrowths(includeExpiry bool, requireSuccess bool) error {

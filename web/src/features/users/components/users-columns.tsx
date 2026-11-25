@@ -32,8 +32,9 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { toIntlLocale } from '@/i18n/languages'
 import { getCurrencyDisplay } from '@/lib/currency'
-import { formatQuota } from '@/lib/format'
+import { formatNumber, formatQuota } from '@/lib/format'
 import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import {
@@ -47,7 +48,8 @@ import { DataTableRowActions } from './data-table-row-actions'
 import { UserQuotaCell } from './user-quota-cell'
 
 export function useUsersColumns(): ColumnDef<User>[] {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const currencyConfig = useSystemConfigStore((state) => state.config.currency)
   const { meta: currency } = getCurrencyDisplay()
   const quotaUnit = currency.kind === 'tokens' ? t('Tokens') : currency.symbol
@@ -275,6 +277,18 @@ export function useUsersColumns(): ColumnDef<User>[] {
         meta: { mobileHidden: true },
       },
       {
+        accessorKey: 'growth_amount',
+        header: t('Growth points'),
+        cell: ({ row }) => (
+          <span className='text-sm tabular-nums'>
+            {formatNumber(row.original.growth_amount, locale)}
+          </span>
+        ),
+        enableSorting: false,
+        size: 120,
+        meta: { mobileOrder: 25 },
+      },
+      {
         accessorKey: 'created_at',
         header: t('Time'),
         cell: ({ row }) => (
@@ -298,6 +312,6 @@ export function useUsersColumns(): ColumnDef<User>[] {
     ],
     // formatQuota reads the currency configuration from the store.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [t, quotaUnit, currencyConfig]
+    [t, locale, quotaUnit, currencyConfig]
   )
 }

@@ -27,7 +27,7 @@ import { quotaUnitsToDollars } from '@/lib/format'
 import { ROLE } from '@/lib/roles'
 
 import { DEFAULT_GROUP } from '../constants'
-import { type UserFormData, type User } from '../types'
+import type { UserFormData, User } from '../types'
 
 // ============================================================================
 // Form Schema
@@ -39,6 +39,7 @@ export const userFormSchema = z.object({
   password: z.string().optional(),
   role: z.number().optional(),
   quota_dollars: z.number().min(0).optional(),
+  growth_amount: z.number().optional(),
   group: z.string().optional(),
   remark: z.string().optional(),
   admin_permissions: z
@@ -47,6 +48,12 @@ export const userFormSchema = z.object({
 })
 
 export type UserFormValues = z.infer<typeof userFormSchema>
+
+export const growthAdjustmentSchema = z.object({
+  amount: z.string().regex(/^\d+(?:\.\d{1,2})?$/, 'Invalid growth points'),
+})
+
+export type GrowthAdjustmentValues = z.infer<typeof growthAdjustmentSchema>
 
 // ============================================================================
 // Form Defaults
@@ -119,6 +126,7 @@ export function transformUserToFormDefaults(user: User): UserFormValues {
     password: '',
     role: user.role,
     quota_dollars: quotaUnitsToDollars(user.quota),
+    growth_amount: user.growth_amount,
     group: user.group || DEFAULT_GROUP,
     remark: user.remark || '',
     admin_permissions: user.admin_permissions ?? {},

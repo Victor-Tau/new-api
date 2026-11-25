@@ -31,6 +31,7 @@ import type {
   UserFormData,
   ManageUserAction,
   ManageUserQuotaPayload,
+  UserGrowthAdjustment,
   ApiResponse,
   UserReferralPermissions,
 } from './types'
@@ -102,6 +103,16 @@ export async function searchUsers(
 export async function getUser(id: number): Promise<ApiResponse<User>> {
   const res = await api.get(`/api/user/${id}`)
   return res.data
+}
+
+export async function adjustUserGrowth(
+  id: number,
+  amount: number
+): Promise<UserGrowthAdjustment> {
+  const response = await api.put<
+    ApiResponse<UserGrowthAdjustment> & { data: UserGrowthAdjustment }
+  >(`/api/user/${id}/growth`, { amount })
+  return requireServerSuccess(response.data).data
 }
 
 /**

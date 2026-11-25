@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/glebarez/sqlite"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/mysql"
@@ -171,6 +172,73 @@ func TestVIPDatabaseLifecycle(t *testing.T) {
 			var logs int64
 			require.NoError(t, LOG_DB.Model(&Log{}).Where("user_id = ? AND type = ?", user.Id, LogTypeSystem).Count(&logs).Error)
 			assert.EqualValues(t, 3, logs)
+
+			t.Run("manual_adjustments_follow_the_growth_window", func(t *testing.T) {
+				managed := User{Username: "manual-growth", Group: "VIP0-大学生优惠", Quota: 12345, AffCode: "manual"}
+				require.NoError(t, DB.Create(&managed).Error)
+				require.NoError(t, DB.Model(&managed).Updates(userGroupColumns(managed.Group)).Error)
+
+				adjustment, err := AdjustUserGrowth(managed.Id, common.RoleAdminUser, decimal.RequireFromString("600.25"))
+				require.NoError(t, err)
+				assert.Equal(t, 0.0, adjustment.Before)
+				assert.Equal(t, 600.25, adjustment.Amount)
+				assert.Equal(t, "VIP1-大学生优惠", adjustment.Group)
+
+				// Applying the same value twice leaves the ledger unchanged.
+				_, err = AdjustUserGrowth(managed.Id, common.RoleAdminUser, decimal.RequireFromString("600.25"))
+				require.NoError(t, err)
+				growth, err := GetUserGrowth(managed.Id)
+				require.NoError(t, err)
+				events, total, err := GetUserGrowthEvents(managed.Id, growth.WindowStart, 0, 10)
+				require.NoError(t, err)
+				require.Len(t, events, 1)
+				assert.EqualValues(t, 1, total)
+				assert.Equal(t, growthAdminAdjustment, events[0].Source)
+
+				adjustment, err = AdjustUserGrowth(managed.Id, common.RoleAdminUser, decimal.Zero)
+				require.NoError(t, err)
+				assert.Equal(t, 600.25, adjustment.Before)
+				assert.Zero(t, adjustment.Amount)
+				assert.Equal(t, "VIP0-大学生优惠", adjustment.Group)
+				require.NoError(t, DB.First(&managed, managed.Id).Error)
+				assert.Equal(t, 12345, managed.Quota)
+
+				// Once the positive event expires, the negative raw total is
+				// presented as zero and a new adjustment still sets the exact total.
+				require.NoError(t, DB.Model(&GrowthEvent{}).Where("id = ?", events[0].Id).Update("created_at", expired).Error)
+				amounts, err := GetUserGrowthAmounts([]int{managed.Id, user.Id, custom.Id})
+				require.NoError(t, err)
+				assert.Zero(t, amounts[managed.Id])
+				assert.Equal(t, 600.0, amounts[user.Id])
+				assert.Zero(t, amounts[custom.Id])
+
+				adjustment, err = AdjustUserGrowth(managed.Id, common.RoleAdminUser, decimal.NewFromInt(500))
+				require.NoError(t, err)
+				assert.Zero(t, adjustment.Before)
+				assert.Equal(t, 500.0, adjustment.Amount)
+				assert.Equal(t, "VIP1-大学生优惠", adjustment.Group)
+
+				require.NoError(t, DB.Model(&GrowthEvent{}).Where("user_id = ?", managed.Id).Update("created_at", expired).Error)
+				require.NoError(t, DB.Model(&UserGrowth{}).Where("user_id = ?", managed.Id).Update("next_expiry", now).Error)
+				require.NoError(t, RefreshUserGrowths(true, true))
+				growth, err = GetUserGrowth(managed.Id)
+				require.NoError(t, err)
+				assert.Zero(t, growth.Quota)
+				require.NoError(t, DB.First(&managed, managed.Id).Error)
+				assert.Equal(t, "VIP0-大学生优惠", managed.Group)
+
+				// A displayed 500 can still be just below the actual VIP1 threshold.
+				threshold, err := common.WalletQuotaFromDecimalStrict(decimal.NewFromInt(500).Mul(decimal.NewFromFloat(common.QuotaPerUnit)))
+				require.NoError(t, err)
+				require.NoError(t, DB.Create(&GrowthEvent{
+					UserId: managed.Id, Quota: int64(threshold) - 1, Source: growthTopup,
+					RefId: "just-below-vip1", CreatedAt: common.GetTimestamp(),
+				}).Error)
+				adjustment, err = AdjustUserGrowth(managed.Id, common.RoleAdminUser, decimal.NewFromInt(500))
+				require.NoError(t, err)
+				assert.Equal(t, 500.0, adjustment.Before)
+				assert.Equal(t, "VIP1-大学生优惠", adjustment.Group)
+			})
 
 			t.Run("settings_and_email", func(t *testing.T) {
 				require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"VIP0":1,"VIP1":1,"VIP1-大学生优惠":1,"VIP2-大学生优惠":1}`))

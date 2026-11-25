@@ -65,6 +65,7 @@ import {
   SheetTitle,
 } from '@/components/ui/sheet'
 import { Textarea } from '@/components/ui/textarea'
+import { toIntlLocale } from '@/i18n/languages'
 import {
   ADMIN_PERMISSION_ACTIONS,
   ADMIN_PERMISSION_RESOURCES,
@@ -74,7 +75,7 @@ import {
   type AdminPermissionMatrix,
 } from '@/lib/admin-permissions'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
-import { formatQuota, parseQuotaFromDollars } from '@/lib/format'
+import { formatNumber, formatQuota, parseQuotaFromDollars } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 import { accountPasswordSchema } from '@/lib/password-policy'
 import { ROLE } from '@/lib/roles'
@@ -98,6 +99,7 @@ import {
   transformUserToFormDefaults,
 } from '../lib'
 import type { User } from '../types'
+import { UserGrowthDialog } from './dialogs/user-growth-dialog'
 import { UserQuotaDialog } from './user-quota-dialog'
 import { useUsers } from './users-provider'
 
@@ -112,12 +114,14 @@ export function UsersMutateDrawer({
   onOpenChange,
   currentRow,
 }: UsersMutateDrawerProps) {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const isUpdate = !!currentRow
   const { triggerRefresh, requestVerification } = useUsers()
   const currentUser = useAuthStore((s) => s.auth.user)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [quotaDialogOpen, setQuotaDialogOpen] = useState(false)
+  const [loadedUserId, setLoadedUserId] = useState<number>()
   // Matrix as loaded from the server; an unchanged matrix is not resubmitted so
   // routine edits of an administrator do not require step-up verification.
   const loadedPermissions = useRef<AdminPermissionMatrix | undefined>(undefined)
@@ -146,17 +150,25 @@ export function UsersMutateDrawer({
   // Load existing data when updating
   useEffect(() => {
     if (open && isUpdate && currentRow) {
+      let active = true
       // For update, fetch fresh data
       getUser(currentRow.id)
         .then((result) => {
+          if (!active) return
           if (result.success && result.data) {
             loadedPermissions.current = result.data.admin_permissions
             form.reset(transformUserToFormDefaults(result.data))
+            setLoadedUserId(result.data.id)
           } else {
             handleServerError(result, t('Failed to load'))
           }
         })
-        .catch((error) => handleServerError(error, t('Failed to load')))
+        .catch((error) => {
+          if (active) handleServerError(error, t('Failed to load'))
+        })
+      return () => {
+        active = false
+      }
     } else if (open && !isUpdate) {
       // For create, reset to defaults
       form.reset(USER_FORM_DEFAULT_VALUES)
@@ -171,6 +183,7 @@ export function UsersMutateDrawer({
   const selectedRole = form.watch('role')
   const canEditAdminPermissions = currentUser?.role === ROLE.SUPER_ADMIN
   const targetIsAdmin = (selectedRole ?? currentRow?.role ?? 0) >= ROLE.ADMIN
+  const growthLoaded = currentRow?.id === loadedUserId
 
   const onSubmit = async (data: UserFormValues) => {
     if (!isUpdate || data.password) {
@@ -245,6 +258,7 @@ export function UsersMutateDrawer({
             ? t(SUCCESS_MESSAGES.USER_UPDATED)
             : t(SUCCESS_MESSAGES.USER_CREATED)
         )
+        setLoadedUserId(undefined)
         onOpenChange(false)
         triggerRefresh()
       } else {
@@ -281,6 +295,7 @@ export function UsersMutateDrawer({
         onOpenChange={(v) => {
           onOpenChange(v)
           if (!v) {
+            setLoadedUserId(undefined)
             form.reset()
           }
         }}
@@ -487,6 +502,46 @@ export function UsersMutateDrawer({
                           {formatQuota(parseQuotaFromDollars(field.value || 0))}
                         </FormDescription>
                         <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='growth_amount'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Growth points')}</FormLabel>
+                        <div className='flex gap-2'>
+                          <FormControl>
+                            <Input
+                              value={formatNumber(
+                                growthLoaded ? field.value : undefined,
+                                locale
+                              )}
+                              readOnly
+                              className='flex-1'
+                            />
+                          </FormControl>
+                          {currentRow && (
+                            <UserGrowthDialog
+                              key={currentRow.id}
+                              userId={currentRow.id}
+                              amount={growthLoaded ? field.value : undefined}
+                              onSuccess={(result) => {
+                                form.resetField('growth_amount', {
+                                  defaultValue: result.growth_amount,
+                                })
+                                if (!form.getFieldState('group').isDirty) {
+                                  form.resetField('group', {
+                                    defaultValue: result.group,
+                                  })
+                                }
+                                triggerRefresh()
+                              }}
+                            />
+                          )}
+                        </div>
                       </FormItem>
                     )}
                   />

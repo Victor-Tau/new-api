@@ -483,6 +483,8 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'user.create': 'Created user {{username}} (role {{role}})',
   'user.referral_update':
     'Updated referral permissions for {{username}} (ID: {{id}})',
+  'user.growth_adjust':
+    'Adjusted VIP growth points for {{username}} (ID: {{id}}) from {{from}} to {{to}}',
   'user.update': 'Updated user {{username}} (ID: {{id}})',
   'user.delete': 'Deleted user {{username}} (ID: {{id}})',
   'user.account_delete': 'Account deletion',
@@ -614,6 +616,9 @@ export function renderAuditContent(
 ): string | null {
   const op = other?.op
   if (!op?.action) return null
+  if (op.action === 'user.growth_adjust' && other?.audit_info?.success === false) {
+    return t('Failed to adjust growth points')
+  }
   if (
     op.action === 'redemption.delete_batch' ||
     (op.action === 'redemption.delete' &&

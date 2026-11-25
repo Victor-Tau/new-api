@@ -1,12 +1,65 @@
 package controller
 
 import (
+	"errors"
 	"math"
+	"net/http"
+	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
+	"gorm.io/gorm"
 )
+
+type adminUserGrowthDetails struct {
+	*model.User
+	GrowthAmount float64 `json:"growth_amount"`
+}
+
+func adminUsersWithGrowth(users []*model.User) ([]adminUserGrowthDetails, error) {
+	ids := make([]int, 0, len(users))
+	for _, user := range users {
+		ids = append(ids, user.Id)
+	}
+	amounts, err := model.GetUserGrowthAmounts(ids)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]adminUserGrowthDetails, 0, len(users))
+	for _, user := range users {
+		items = append(items, adminUserGrowthDetails{User: user, GrowthAmount: amounts[user.Id]})
+	}
+	return items, nil
+}
+
+func AdjustAdminUserGrowth(c *gin.Context) {
+	userID, err := strconv.Atoi(c.Param("id"))
+	var request struct {
+		Amount *float64 `json:"amount"`
+	}
+	if err != nil || userID <= 0 || common.DecodeJson(c.Request.Body, &request) != nil || request.Amount == nil {
+		writeAccountStatusError(c, http.StatusBadRequest, "Invalid parameters")
+		return
+	}
+	adjustment, err := model.AdjustUserGrowth(userID, c.GetInt("role"), decimal.NewFromFloat(*request.Amount))
+	switch {
+	case errors.Is(err, model.ErrInvalidGrowthAmount):
+		writeAccountStatusError(c, http.StatusBadRequest, "Invalid growth points")
+	case errors.Is(err, model.ErrUserGrowthPermission):
+		writeAccountStatusError(c, http.StatusForbidden, "No permission to update users of same or higher permission level")
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		writeAccountStatusError(c, http.StatusNotFound, "User does not exist")
+	case err != nil:
+		common.ApiError(c, err)
+	default:
+		recordManageAuditFor(c, userID, "user.growth_adjust", map[string]any{
+			"id": userID, "username": adjustment.Username, "from": adjustment.Before, "to": adjustment.Amount,
+		})
+		common.ApiSuccess(c, gin.H{"growth_amount": adjustment.Amount, "group": adjustment.Group})
+	}
+}
 
 func GetSelfGrowth(c *gin.Context) {
 	userId := c.GetInt("id")

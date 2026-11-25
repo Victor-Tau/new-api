@@ -238,6 +238,92 @@ func createQuotaTestOperator(t *testing.T, db *gorm.DB, role int) model.User {
 	return operator
 }
 
+func TestAdminUserGrowthAdjustment(t *testing.T) {
+	db := setupManageUserTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.GrowthEvent{}, &model.UserGrowth{}))
+	users := []model.User{
+		{Username: "growth-admin", Role: common.RoleAdminUser, AffCode: "growth-a"},
+		{Username: "growth-user", Role: common.RoleCommonUser, AffCode: "growth-u"},
+		{Username: "growth-peer", Role: common.RoleAdminUser, AffCode: "growth-p"},
+	}
+	require.NoError(t, db.Create(&users).Error)
+	admin, user, peer := users[0], users[1], users[2]
+	login := func(id int) string {
+		t.Helper()
+		bundle, err := service.CreateLoginSession(id, "password", "127.0.0.1", "growth-test")
+		require.NoError(t, err)
+		return bundle.AccessToken
+	}
+	adminToken, userToken := login(admin.Id), login(user.Id)
+	suffix, err := common.GenerateRandomCharsKey(43)
+	require.NoError(t, err)
+	adminPAT := model.AccessTokenPrefix + suffix
+	token := model.UserAccessToken{Name: "growth-test", TokenHash: model.AccessTokenFingerprint(adminPAT), TokenHint: model.AccessTokenHint(adminPAT)}
+	require.NoError(t, token.SetScopes([]string{"user:write"}))
+	require.NoError(t, model.CreateUserAccessToken(admin.Id, &token, service.AccessTokenMaxPerUser))
+	router := gin.New()
+	router.Use(middleware.RequestId(), middleware.AdminAuth())
+	router.PUT("/api/user/:id/growth", AdjustAdminUserGrowth)
+	router.GET("/api/user/", GetAllUsers)
+	router.GET("/api/user/search", SearchUsers)
+	router.GET("/api/user/:id", GetUser)
+	request := func(method, path, token, body string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		router.ServeHTTP(recorder, req)
+		return recorder
+	}
+	updatePath := fmt.Sprintf("/api/user/%d/growth", user.Id)
+	for _, tc := range []struct {
+		name, path, token, body string
+		status                  int
+	}{
+		{"anonymous", updatePath, "", `{"amount":600}`, http.StatusUnauthorized},
+		{"ordinary user", updatePath, userToken, `{"amount":600}`, http.StatusForbidden},
+		{"personal access token", updatePath, adminPAT, `{"amount":600}`, http.StatusForbidden},
+		{"peer admin", fmt.Sprintf("/api/user/%d/growth", peer.Id), adminToken, `{"amount":600}`, http.StatusForbidden},
+		{"missing amount", updatePath, adminToken, `{}`, http.StatusBadRequest},
+		{"negative amount", updatePath, adminToken, `{"amount":-1}`, http.StatusBadRequest},
+		{"too many fractional digits", updatePath, adminToken, `{"amount":1.234}`, http.StatusBadRequest},
+		{"excessive amount", updatePath, adminToken, `{"amount":1e100}`, http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := request(http.MethodPut, tc.path, tc.token, tc.body)
+			assert.Equal(t, tc.status, response.Code, response.Body.String())
+			if tc.token == adminPAT {
+				assert.Contains(t, response.Body.String(), "AUTH_SESSION_REQUIRED")
+			}
+		})
+	}
+	var eventCount int64
+	require.NoError(t, db.Model(&model.GrowthEvent{}).Count(&eventCount).Error)
+	assert.Zero(t, eventCount)
+
+	response := request(http.MethodPut, updatePath, adminToken, `{"amount":600.25}`)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	assert.Contains(t, response.Body.String(), `"growth_amount":600.25`)
+	var audit model.AuditLog
+	require.NoError(t, model.LOG_DB.Where("request_id = ?", response.Header().Get(common.RequestIdKey)).First(&audit).Error)
+	assert.Equal(t, "user.growth_adjust", audit.Action)
+	assert.Equal(t, admin.Id, audit.UserId)
+	assert.True(t, audit.Success)
+	assert.Contains(t, audit.Content, "from 0 to 600.25")
+
+	for _, path := range []string{
+		"/api/user/", "/api/user/search?keyword=growth-user", fmt.Sprintf("/api/user/%d", user.Id),
+	} {
+		response := request(http.MethodGet, path, adminToken, "")
+		require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+		assert.Contains(t, response.Body.String(), `"growth_amount":600.25`, path)
+	}
+	response = request(http.MethodPut, updatePath, adminToken, `{"amount":0}`)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	assert.Contains(t, response.Body.String(), `"growth_amount":0`)
+}
+
 func TestManageUserQuotaRecordsTopupAndAudit(t *testing.T) {
 	for _, tc := range []struct {
 		name, mode, action, content string
