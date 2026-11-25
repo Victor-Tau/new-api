@@ -415,9 +415,26 @@ func TestEpayRSAModeSignsOrdersAndVerifiesCallbacks(t *testing.T) {
 	require.NoError(t, err)
 	unsigned := maps.Clone(paid)
 	delete(unsigned, "sign")
+	otherMerchant := *platform
+	otherMerchantConfig := *platform.Config
+	otherMerchant.Config = &otherMerchantConfig
+	otherMerchantConfig.PartnerID = "other_merchant"
+	wrongPartner, err := otherMerchant.SignParams(paidFields)
+	require.NoError(t, err)
+	otherMerchantConfig.PartnerID = ""
+	missingPartner, err := otherMerchant.SignParams(paidFields)
+	require.NoError(t, err)
+	delete(missingPartner, "pid")
+	for _, params := range []map[string]string{wrongPartner, missingPartner} {
+		verified, err := client.Verify(params)
+		require.NoError(t, err)
+		require.True(t, verified.VerifyStatus)
+	}
 
 	assertEpayCallbacksVerifyBeforeSettlement(t, []epayCallbackCase{
 		{name: "valid pending signed by platform", params: pending, validPending: true},
+		{name: "valid signature for a different partner", params: wrongPartner},
+		{name: "valid signature without a partner", params: missingPartner},
 		{name: "tampered amount", params: tampered},
 		{name: "signed with merchant key", params: merchantSigned},
 		{name: "MD5 signature in RSA mode", params: md5Signed},
