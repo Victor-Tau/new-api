@@ -16,6 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { z } from 'zod'
+
 import { parseCurrencyDisplayType } from '@/lib/currency'
 
 import { CheckinSettingsSection } from '../general/checkin-settings-section'
@@ -54,6 +56,25 @@ const getGroupDefaults = (settings: BillingSettings) => ({
   GroupSpecialUsableGroup:
     settings['group_ratio_setting.group_special_usable_group'],
 })
+
+const stripeServiceFeeSettings = z.object({
+  amount: z.coerce.number().min(0).default(0),
+  waiver_cny: z.coerce.number().min(0).default(50),
+})
+
+function getStripeServiceFeeDefaults(raw: string) {
+  let value: unknown
+  try {
+    value = JSON.parse(raw)
+  } catch {
+    value = {}
+  }
+  const result = stripeServiceFeeSettings.safeParse(value)
+  return {
+    StripeSmallTopUpFee: result.data?.amount ?? 0,
+    StripeSmallTopUpFeeWaiverCNY: result.data?.waiver_cny ?? 50,
+  }
+}
 
 const BILLING_SECTIONS = [
   {
@@ -156,6 +177,7 @@ const BILLING_SECTIONS = [
           StripePriceId: settings.StripePriceId,
           StripeUnitPrice: settings.StripeUnitPrice,
           StripeMinTopUp: settings.StripeMinTopUp,
+          ...getStripeServiceFeeDefaults(settings.StripeSmallTopUpFeeSettings),
           StripePromotionCodesEnabled: settings.StripePromotionCodesEnabled,
           CreemApiKey: settings.CreemApiKey,
           CreemWebhookSecret: settings.CreemWebhookSecret,

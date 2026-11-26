@@ -2,6 +2,7 @@ package controller
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -199,6 +201,114 @@ func TestStripeVIPDiscountChangesCheckoutPriceAndPreservesCredit(t *testing.T) {
 
 	_, err = validateCreditedQuota(getStripeCreditedQuota(decimal.NewFromInt(common.MaxWalletQuota)))
 	require.Error(t, err)
+}
+
+type stripeTopUpTestTransport func(*http.Request) (*http.Response, error)
+
+func (transport stripeTopUpTestTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return transport(req)
+}
+
+func TestStripeSmallTopUpFeePreviewAndCheckout(t *testing.T) {
+	db := setupManageUserTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.Option{}, &model.TopUp{}))
+	level := 2
+	user := model.User{Username: "stripe-topup", Group: "VIP2", VIPLevel: &level}
+	require.NoError(t, db.Create(&user).Error)
+	previousOptions := common.OptionMap
+	previousRate := operation_setting.USDExchangeRate
+	previousDisplay := operation_setting.GetQuotaDisplayType()
+	previousPrice, previousKey, previousUnitPrice := setting.StripePriceId, setting.StripeApiSecret, setting.StripeUnitPrice
+	previousBackend := stripe.GetBackend(stripe.APIBackend)
+	t.Cleanup(func() {
+		common.OptionMap = previousOptions
+		operation_setting.USDExchangeRate = previousRate
+		operation_setting.GetGeneralSetting().QuotaDisplayType = previousDisplay
+		setting.StripePriceId, setting.StripeApiSecret, setting.StripeUnitPrice = previousPrice, previousKey, previousUnitPrice
+		stripe.SetBackend(stripe.APIBackend, previousBackend)
+	})
+	common.OptionMap = map[string]string{}
+	operation_setting.USDExchangeRate = 5
+	operation_setting.GetGeneralSetting().QuotaDisplayType = operation_setting.QuotaDisplayTypeCNY
+	setting.StripePriceId, setting.StripeApiSecret, setting.StripeUnitPrice = "price_test", "sk_test_fixture", 1.18
+
+	require.Error(t, model.UpdateOption(setting.StripeSmallTopUpFeeOption, `{"amount":-1,"waiver_cny":50}`))
+	require.Error(t, model.UpdateOption(setting.StripeSmallTopUpFeeOption, `{"amount":1,"waiver_cny":50.001}`))
+
+	for _, tc := range []struct {
+		name       string
+		quantity   int
+		settings   string
+		fee        string
+		topUpMinor string
+		total      string
+	}{
+		{name: "existing installation does not charge a fee", quantity: 10, topUpMinor: "1145", total: "11.45"},
+		{name: "default threshold includes exactly fifty CNY", quantity: 10, settings: `{"amount":2.35,"waiver_cny":50}`, fee: "2.35", topUpMinor: "1145", total: "13.80"},
+		{name: "above the default threshold is waived", quantity: 11, settings: `{"amount":2.35,"waiver_cny":50}`, topUpMinor: "1259", total: "12.59"},
+		{name: "custom threshold charges below the line", quantity: 11, settings: `{"amount":2.35,"waiver_cny":60.50}`, fee: "2.35", topUpMinor: "1259", total: "14.94"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.settings != "" {
+				require.NoError(t, model.UpdateOption(setting.StripeSmallTopUpFeeOption, tc.settings))
+				var option model.Option
+				require.NoError(t, db.First(&option, &model.Option{Key: setting.StripeSmallTopUpFeeOption}).Error)
+				assert.Equal(t, tc.settings, option.Value)
+			}
+			transport := stripeTopUpTestTransport(func(req *http.Request) (*http.Response, error) {
+				var body string
+				switch req.URL.Path {
+				case "/v1/prices/price_test":
+					body = `{"id":"price_test","currency":"hkd","unit_amount":118,"billing_scheme":"per_unit","product":"prod_wallet"}`
+				case "/v1/checkout/sessions":
+					require.NoError(t, req.ParseForm())
+					assert.Equal(t, tc.topUpMinor, req.Form.Get("line_items[0][price_data][unit_amount]"))
+					if tc.fee == "" {
+						assert.Empty(t, req.Form.Get("line_items[1][quantity]"))
+					} else {
+						assert.Equal(t, "235", req.Form.Get("line_items[1][price_data][unit_amount]"))
+						assert.Equal(t, "hkd", req.Form.Get("line_items[1][price_data][currency]"))
+						assert.Equal(t, "Small top-up service fee", req.Form.Get("line_items[1][price_data][product_data][name]"))
+					}
+					body = `{"id":"cs_test_fixture","currency":"hkd","url":"https://checkout.stripe.com/test"}`
+				default:
+					return nil, fmt.Errorf("unexpected Stripe request: %s", req.URL.Path)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+			})
+			stripe.SetBackend(stripe.APIBackend, stripe.GetBackendWithConfig(stripe.APIBackend, &stripe.BackendConfig{
+				HTTPClient:        &http.Client{Transport: transport},
+				MaxNetworkRetries: stripe.Int64(0),
+			}))
+			body := fmt.Sprintf(`{"amount":%d,"payment_method":"stripe"}`, tc.quantity)
+			preview := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(preview)
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/stripe/amount", strings.NewReader(body))
+			ctx.Set("id", user.Id)
+			RequestStripeAmount(ctx)
+			var quote struct {
+				Data       string
+				ServiceFee string `json:"service_fee"`
+				Currency   string
+			}
+			require.NoError(t, common.Unmarshal(preview.Body.Bytes(), &quote), preview.Body.String())
+			assert.Equal(t, tc.total, quote.Data)
+			assert.Equal(t, tc.fee, quote.ServiceFee)
+			if tc.fee != "" {
+				assert.Equal(t, "HKD", quote.Currency)
+			}
+			start := httptest.NewRecorder()
+			ctx, _ = gin.CreateTestContext(start)
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/api/user/stripe/pay", strings.NewReader(body))
+			ctx.Set("id", user.Id)
+			RequestStripePay(ctx)
+			require.Contains(t, start.Body.String(), "https://checkout.stripe.com/test")
+			var stored model.TopUp
+			require.NoError(t, db.Last(&stored).Error)
+			assert.Equal(t, float64(tc.quantity), stored.Money)
+			assert.Equal(t, common.TopUpStatusPending, stored.Status)
+		})
+	}
 }
 
 func TestStripeReferralRebateUsesCapturedPayment(t *testing.T) {

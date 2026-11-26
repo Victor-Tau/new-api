@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import i18next from 'i18next'
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import { toast } from 'sonner'
 
 import { handleServerError } from '@/lib/handle-server-error'
@@ -52,6 +52,11 @@ export interface PaymentAmountCalculators {
   waffoPancake: AmountCalculator
 }
 
+interface PaymentAmount {
+  total: number
+  serviceFee?: { amount: number; currency: string }
+}
+
 const defaultPaymentAmountCalculators: PaymentAmountCalculators = {
   regular: calculateAmount,
   stripe: calculateStripeAmount,
@@ -63,7 +68,7 @@ export async function requestPaymentAmount(
   topupAmount: number,
   paymentType: string,
   calculators: PaymentAmountCalculators = defaultPaymentAmountCalculators
-): Promise<number> {
+): Promise<PaymentAmount | null> {
   let calculator = calculators.regular
   if (isStripePayment(paymentType)) {
     calculator = calculators.stripe
@@ -75,33 +80,47 @@ export async function requestPaymentAmount(
 
   const response = await calculator({ amount: topupAmount })
   if (!isApiSuccess(response) || !response.data) {
-    return 0
+    return null
   }
 
-  return Number.parseFloat(response.data)
+  const total = Number.parseFloat(response.data)
+  if (!Number.isFinite(total)) return null
+  if (response.service_fee && response.currency) {
+    return {
+      total,
+      serviceFee: {
+        amount: Number.parseFloat(response.service_fee),
+        currency: response.currency,
+      },
+    }
+  }
+  return { total }
 }
 
 export function usePayment() {
-  const [amount, setAmount] = useState<number>(0)
+  const [quote, setQuote] = useState<PaymentAmount | null>(null)
+  const amountRequest = useRef(0)
   const [calculating, setCalculating] = useState(false)
   const [processing, setProcessing] = useState(false)
 
   // Calculate payment amount
   const calculatePaymentAmount = useCallback(
     async (topupAmount: number, paymentType: string) => {
+      const requestId = ++amountRequest.current
       try {
         setCalculating(true)
         const calculatedAmount = await requestPaymentAmount(
           topupAmount,
           paymentType
         )
-        setAmount(calculatedAmount)
+        if (requestId !== amountRequest.current) return null
+        setQuote(calculatedAmount)
         return calculatedAmount
       } catch {
-        setAmount(0)
-        return 0
+        if (requestId === amountRequest.current) setQuote(null)
+        return null
       } finally {
-        setCalculating(false)
+        if (requestId === amountRequest.current) setCalculating(false)
       }
     },
     []
@@ -160,11 +179,11 @@ export function usePayment() {
   )
 
   return {
-    amount,
+    amount: quote?.total ?? 0,
+    serviceFee: quote?.serviceFee,
     calculating,
     processing,
     calculatePaymentAmount,
     processPayment,
-    setAmount,
   }
 }

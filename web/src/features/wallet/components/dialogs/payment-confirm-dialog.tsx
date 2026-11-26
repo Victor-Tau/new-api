@@ -42,6 +42,7 @@ interface PaymentConfirmDialogProps {
   onConfirm: () => void
   topupAmount: number
   paymentAmount: number
+  serviceFee?: { amount: number; currency: string }
   paymentMethod: PaymentMethod | undefined
   calculating: boolean
   processing: boolean
@@ -55,6 +56,7 @@ export function PaymentConfirmDialog({
   onConfirm,
   topupAmount,
   paymentAmount,
+  serviceFee,
   paymentMethod,
   calculating,
   processing,
@@ -62,7 +64,8 @@ export function PaymentConfirmDialog({
   usdExchangeRate = 1,
 }: PaymentConfirmDialogProps) {
   const { t } = useTranslation()
-  const hasDiscount = discountRate > 0 && discountRate < 1 && paymentAmount > 0
+  const hasDiscount =
+    !serviceFee && discountRate > 0 && discountRate < 1 && paymentAmount > 0
   const originalAmount = hasDiscount ? paymentAmount / discountRate : 0
   const discountAmount = hasDiscount ? originalAmount - paymentAmount : 0
 
@@ -92,6 +95,17 @@ export function PaymentConfirmDialog({
             </span>
           </div>
 
+          {serviceFee && !calculating && (
+            <div className='flex items-center justify-between'>
+              <span className='text-muted-foreground text-sm'>
+                {t('Small top-up service fee')}
+              </span>
+              <span className='font-semibold'>
+                {formatCurrency(serviceFee.amount)} {serviceFee.currency}
+              </span>
+            </div>
+          )}
+
           <div className='flex items-center justify-between'>
             <span className='text-muted-foreground text-sm'>
               {t('You Pay')}
@@ -102,6 +116,7 @@ export function PaymentConfirmDialog({
               <div className='flex items-baseline gap-2'>
                 <span className='text-2xl font-semibold'>
                   {formatCurrency(paymentAmount)}
+                  {serviceFee && ` ${serviceFee.currency}`}
                 </span>
                 {hasDiscount && (
                   <span className='text-muted-foreground text-sm line-through'>

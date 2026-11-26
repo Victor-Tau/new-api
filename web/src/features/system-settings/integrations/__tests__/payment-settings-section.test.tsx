@@ -48,6 +48,8 @@ const defaults: PaymentValues = {
   StripePriceId: '',
   StripeUnitPrice: 8,
   StripeMinTopUp: 1,
+  StripeSmallTopUpFee: 0,
+  StripeSmallTopUpFeeWaiverCNY: 50,
   StripePromotionCodesEnabled: false,
   CreemApiKey: '',
   CreemWebhookSecret: '',
@@ -95,7 +97,10 @@ function PaymentFixture(props: { values: PaymentValues }) {
   )
 }
 
-async function openEpayTab(values: Partial<PaymentValues> = {}) {
+async function openPaymentTab(
+  tab: string,
+  values: Partial<PaymentValues> = {}
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
@@ -105,15 +110,45 @@ async function openEpayTab(values: Partial<PaymentValues> = {}) {
     </QueryClientProvider>
   )
   const user = userEvent.setup()
-  await user.click(screen.getByRole('tab', { name: 'Epay' }))
+  await user.click(screen.getByRole('tab', { name: tab }))
   return user
 }
 
 afterEach(() => vi.restoreAllMocks())
 
+describe('Stripe small top-up service fee', () => {
+  it('shows the disabled default and saves the fee and CNY threshold', async () => {
+    const request = vi
+      .spyOn(api, 'put')
+      .mockResolvedValue({ data: { success: true } })
+    const user = await openPaymentTab('Stripe')
+    const fee = screen.getByRole('spinbutton', {
+      name: 'Small top-up service fee',
+    })
+    const threshold = screen.getByRole('spinbutton', {
+      name: 'Service fee waiver threshold (CNY)',
+    })
+    expect(fee).toHaveValue(0)
+    expect(threshold).toHaveValue(50)
+
+    await user.click(fee)
+    await user.keyboard('{Control>}a{/Control}2.35')
+    await user.click(threshold)
+    await user.keyboard('{Control>}a{/Control}65.50')
+    await user.click(screen.getByRole('button', { name: 'Save all settings' }))
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith('/api/option/', {
+        key: 'StripeSmallTopUpFeeSettings',
+        value: JSON.stringify({ amount: 2.35, waiver_cny: 65.5 }),
+      })
+    )
+  })
+})
+
 describe('Epay signature type', () => {
   it('shows only the MD5 secret by default and only the RSA keys after choosing RSA', async () => {
-    const user = await openEpayTab()
+    const user = await openPaymentTab('Epay')
     expect(
       screen.getByRole('combobox', { name: 'Signature type' })
     ).toHaveTextContent('MD5')
@@ -141,7 +176,7 @@ describe('Epay signature type', () => {
     const request = vi
       .spyOn(api, 'put')
       .mockResolvedValue({ data: { success: true } })
-    const user = await openEpayTab()
+    const user = await openPaymentTab('Epay')
     await user.click(screen.getByRole('combobox', { name: 'Signature type' }))
     await user.click(screen.getByRole('option', { name: 'RSA' }))
     await user.type(
@@ -173,7 +208,7 @@ describe('Epay signature type', () => {
     const request = vi
       .spyOn(api, 'put')
       .mockResolvedValue({ data: { success: true } })
-    const user = await openEpayTab({
+    const user = await openPaymentTab('Epay', {
       EpaySignType: 'RSA',
       EpayPlatformPublicKey: 'saved-platform-public-key',
     })

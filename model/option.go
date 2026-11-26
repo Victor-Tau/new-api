@@ -101,6 +101,7 @@ func InitOptionMap() {
 	common.OptionMap["StripePriceId"] = setting.StripePriceId
 	common.OptionMap["StripeUnitPrice"] = strconv.FormatFloat(setting.StripeUnitPrice, 'f', -1, 64)
 	common.OptionMap["StripePromotionCodesEnabled"] = strconv.FormatBool(setting.StripePromotionCodesEnabled)
+	common.OptionMap[setting.StripeSmallTopUpFeeOption] = setting.DefaultStripeSmallTopUpFeeOption
 	common.OptionMap["CreemApiKey"] = setting.CreemApiKey
 	common.OptionMap["CreemProducts"] = setting.CreemProducts
 	common.OptionMap["CreemTestMode"] = strconv.FormatBool(setting.CreemTestMode)
@@ -246,6 +247,9 @@ func SyncOptions(frequency int) {
 
 func validateOptionValue(key string, value string) error {
 	switch key {
+	case setting.StripeSmallTopUpFeeOption:
+		_, err := setting.ParseStripeTopUpFeeSettings(value)
+		return err
 	case ReferralDefaultRateOption:
 		_, err := ParseReferralRate(value)
 		return err
@@ -325,7 +329,8 @@ func validateOptionValue(key string, value string) error {
 func UpdateOption(key string, value string) error {
 	if key == vipTierOption || key == emailGroupOption || key == topupRatioOption ||
 		key == ReferralDefaultRateOption || key == ReferralExchangeRatesOption ||
-		key == ReferralRebateDelayOption || key == InvitationRewardDelayOption {
+		key == ReferralRebateDelayOption || key == InvitationRewardDelayOption ||
+		key == setting.StripeSmallTopUpFeeOption {
 		return UpdateOptionsBulk(map[string]string{key: value})
 	}
 	if IsRequestPolicyOption(key) {

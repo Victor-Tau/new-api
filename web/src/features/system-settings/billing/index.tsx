@@ -88,6 +88,7 @@ const defaultBillingSettings: BillingSettings = {
   StripePriceId: '',
   StripeUnitPrice: 8.0,
   StripeMinTopUp: 1,
+  StripeSmallTopUpFeeSettings: '{}',
   StripePromotionCodesEnabled: false,
   CreemApiKey: '',
   CreemWebhookSecret: '',

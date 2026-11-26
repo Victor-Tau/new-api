@@ -64,6 +64,28 @@ func (*StripeAdaptor) RequestAmount(c *gin.Context, req *StripePayRequest) {
 	if rejectInvalidCreditedQuota(c, id, getStripeCreditedQuota(stripeWalletAmount(req.Amount, ratio, membership.VIPLevel))) {
 		return
 	}
+	fee, err := stripeSmallTopUpFee(req.Amount)
+	if err != nil {
+		logger.LogError(c.Request.Context(), common.LogText("Failed to calculate Stripe top-up service fee user_id=%d error=%q", id, err.Error()))
+		paymentError(c, common.NewMessage("Failed to calculate payment amount"))
+		return
+	}
+	if fee.IsPositive() {
+		if membership.VIPLevel == nil {
+			ratio = 1
+		}
+		_, total, currency, err := stripeTopUpCheckoutItems(c.Request.Context(), req.Amount, ratio, fee)
+		if err != nil {
+			logger.LogError(c.Request.Context(), common.LogText("Failed to calculate Stripe top-up service fee user_id=%d error=%q", id, err.Error()))
+			paymentError(c, common.NewMessage("Failed to calculate payment amount"))
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"message": "success", "data": total.StringFixed(stripeChargeScale(currency)),
+			"service_fee": fee.String(), "currency": strings.ToUpper(currency),
+		})
+		return
+	}
 	payMoney := getStripePayMoney(float64(req.Amount), ratio)
 	if payMoney <= 0.01 {
 		paymentError(c, common.NewMessage("Payment amount is too low"))
@@ -115,7 +137,13 @@ func (*StripeAdaptor) RequestPay(c *gin.Context, req *StripePayRequest) {
 	if user.VIPLevel == nil {
 		checkoutRatio = 1
 	}
-	payLink, err := genStripeLink(referenceId, user.StripeCustomer, user.Email, req.Amount, checkoutRatio, req.SuccessURL, req.CancelURL)
+	fee, err := stripeSmallTopUpFee(req.Amount)
+	if err != nil {
+		logger.LogError(c.Request.Context(), common.LogText("Failed to calculate Stripe top-up service fee user_id=%d error=%q", id, err.Error()))
+		paymentError(c, common.NewMessage("Failed to start payment"))
+		return
+	}
+	checkout, err := genStripeLink(c.Request.Context(), referenceId, user.StripeCustomer, user.Email, req.Amount, checkoutRatio, fee, req.SuccessURL, req.CancelURL)
 	if err != nil {
 		logger.LogError(c.Request.Context(), common.LogText("Stripe failed to create Checkout Session user_id=%d trade_no=%s amount=%d error=%q", id, referenceId, req.Amount, err.Error()))
 		paymentError(c, common.NewMessage("Failed to start payment"))
@@ -138,11 +166,12 @@ func (*StripeAdaptor) RequestPay(c *gin.Context, req *StripePayRequest) {
 		paymentError(c, common.NewMessage("Failed to create order"))
 		return
 	}
-	logger.LogInfo(c.Request.Context(), common.LogText("Stripe top-up order created user_id=%d trade_no=%s amount=%d money=%.2f", id, referenceId, req.Amount, getStripePayMoney(float64(req.Amount), ratio)))
+	total := decimal.NewFromInt(checkout.AmountSubtotal).Shift(-stripeChargeScale(string(checkout.Currency)))
+	logger.LogInfo(c.Request.Context(), common.LogText("Stripe top-up order created user_id=%d trade_no=%s amount=%d money=%.2f", id, referenceId, req.Amount, total.InexactFloat64()))
 	c.JSON(http.StatusOK, gin.H{
 		"message": "success",
 		"data": gin.H{
-			"pay_link": payLink,
+			"pay_link": checkout.URL,
 		},
 	})
 }
@@ -327,14 +356,17 @@ func stripeWalletPayment(data []byte) model.WalletTopUpPayment {
 	if checkout.Presentment != nil && checkout.Presentment.Currency != "" {
 		amount, currency = checkout.Presentment.Amount, strings.ToUpper(checkout.Presentment.Currency)
 	}
-	scale := int32(2)
+	return model.ParseWalletTopUpPayment(decimal.NewFromInt(amount).Shift(-stripeChargeScale(currency)).String(), currency)
+}
+
+func stripeChargeScale(currency string) int32 {
 	// These currencies have zero-decimal Stripe charge amounts. ISK and
 	// UGX still use two decimals for backward compatibility.
-	switch currency {
+	switch strings.ToUpper(currency) {
 	case "BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA", "PYG", "RWF", "VND", "VUV", "XAF", "XOF", "XPF":
-		scale = 0
+		return 0
 	}
-	return model.ParseWalletTopUpPayment(decimal.NewFromInt(amount).Shift(-scale).String(), currency)
+	return 2
 }
 
 func sessionExpired(ctx context.Context, event stripe.Event) {
@@ -374,26 +406,11 @@ func sessionExpired(ctx context.Context, event stripe.Event) {
 	logger.LogInfo(ctx, common.LogText("Stripe top-up order expired trade_no=%s", referenceId))
 }
 
-// genStripeLink generates a Stripe Checkout session URL for payment.
-// It creates a new checkout session with the specified parameters and returns the payment URL.
-//
-// Parameters:
-//   - referenceId: unique reference identifier for the transaction
-//   - customerId: existing Stripe customer ID (empty string if new customer)
-//   - email: customer email address for new customer creation
-//   - amount: quantity of units to purchase
-//   - successURL: custom URL to redirect after successful payment (empty for default)
-//   - cancelURL: custom URL to redirect when payment is canceled (empty for default)
-//
-// Returns the checkout session URL or an error if the session creation fails.
-func genStripeLink(referenceId string, customerId string, email string, amount int64, ratio float64, successURL string, cancelURL string) (string, error) {
+func genStripeLink(ctx context.Context, referenceId string, customerId string, email string, amount int64, ratio float64, fee decimal.Decimal, successURL string, cancelURL string) (*stripe.CheckoutSession, error) {
 	if !strings.HasPrefix(setting.StripeApiSecret, "sk_") && !strings.HasPrefix(setting.StripeApiSecret, "rk_") {
-		return "", errors.New("invalid Stripe API key")
+		return nil, errors.New("invalid Stripe API key")
 	}
 
-	stripe.Key = setting.StripeApiSecret
-
-	// Use custom URLs if provided, otherwise use defaults
 	if successURL == "" {
 		successURL = paymentReturnPath("/usage-logs")
 	}
@@ -401,46 +418,120 @@ func genStripeLink(referenceId string, customerId string, email string, amount i
 		cancelURL = paymentReturnPath("/wallet")
 	}
 
-	item := &stripe.CheckoutSessionLineItemParams{
-		Price:    stripe.String(setting.StripePriceId),
-		Quantity: stripe.Int64(amount),
+	items, _, _, err := stripeTopUpCheckoutItems(ctx, amount, ratio, fee)
+	if err != nil {
+		return nil, err
 	}
-	if ratio != 1 {
-		configuredPrice, err := price.Get(setting.StripePriceId, nil)
-		if err != nil {
-			return "", err
-		}
-		item, err = stripeMembershipLineItem(configuredPrice, amount, ratio)
-		if err != nil {
-			return "", err
-		}
-	}
-
 	params := &stripe.CheckoutSessionParams{
 		ClientReferenceID:   stripe.String(referenceId),
 		SuccessURL:          stripe.String(successURL),
 		CancelURL:           stripe.String(cancelURL),
-		LineItems:           []*stripe.CheckoutSessionLineItemParams{item},
+		LineItems:           items,
 		Mode:                stripe.String(string(stripe.CheckoutSessionModePayment)),
 		AllowPromotionCodes: stripe.Bool(setting.StripePromotionCodesEnabled),
 	}
+	params.Context = ctx
 
-	if "" == customerId {
-		if "" != email {
+	if customerId == "" {
+		if email != "" {
 			params.CustomerEmail = stripe.String(email)
 		}
-
 		params.CustomerCreation = stripe.String(string(stripe.CheckoutSessionCustomerCreationAlways))
 	} else {
 		params.Customer = stripe.String(customerId)
 	}
 
-	result, err := session.New(params)
-	if err != nil {
-		return "", err
-	}
+	client := session.Client{B: stripe.GetBackend(stripe.APIBackend), Key: setting.StripeApiSecret}
+	return client.New(params)
+}
 
-	return result.URL, nil
+func stripeSmallTopUpFee(amount int64) (decimal.Decimal, error) {
+	common.OptionMapRWMutex.RLock()
+	raw := common.OptionMap[setting.StripeSmallTopUpFeeOption]
+	exchangeRate := operation_setting.USDExchangeRate
+	displayType := operation_setting.GetQuotaDisplayType()
+	quotaPerUnit := common.QuotaPerUnit
+	common.OptionMapRWMutex.RUnlock()
+	if raw == "" {
+		raw = setting.DefaultStripeSmallTopUpFeeOption
+	}
+	settings, err := setting.ParseStripeTopUpFeeSettings(raw)
+	if err != nil || settings.Amount.IsZero() {
+		return decimal.Zero, err
+	}
+	if exchangeRate <= 0 || math.IsNaN(exchangeRate) || math.IsInf(exchangeRate, 0) {
+		return decimal.Zero, errors.New("invalid USD to CNY exchange rate")
+	}
+	principal := decimal.NewFromInt(amount).Mul(decimal.NewFromFloat(exchangeRate))
+	waiver := settings.WaiverCNY
+	if displayType == operation_setting.QuotaDisplayTypeTokens {
+		if quotaPerUnit <= 0 || math.IsNaN(quotaPerUnit) || math.IsInf(quotaPerUnit, 0) {
+			return decimal.Zero, errors.New("invalid quota per unit")
+		}
+		waiver = waiver.Mul(decimal.NewFromFloat(quotaPerUnit))
+	}
+	if principal.GreaterThan(waiver) {
+		return decimal.Zero, nil
+	}
+	return settings.Amount, nil
+}
+
+func stripeTopUpCheckoutItems(ctx context.Context, quantity int64, ratio float64, fee decimal.Decimal) ([]*stripe.CheckoutSessionLineItemParams, decimal.Decimal, string, error) {
+	priceID := setting.StripePriceId
+	items := []*stripe.CheckoutSessionLineItemParams{{
+		Price:    stripe.String(priceID),
+		Quantity: stripe.Int64(quantity),
+	}}
+	if ratio == 1 && fee.IsZero() {
+		return items, decimal.Zero, "", nil
+	}
+	client := price.Client{B: stripe.GetBackend(stripe.APIBackend), Key: setting.StripeApiSecret}
+	params := &stripe.PriceParams{}
+	params.Context = ctx
+	base, err := client.Get(priceID, params)
+	if err != nil {
+		return nil, decimal.Zero, "", err
+	}
+	if ratio != 1 {
+		items[0], err = stripeMembershipLineItem(base, quantity, ratio)
+		if err != nil {
+			return nil, decimal.Zero, "", err
+		}
+	}
+	if fee.IsZero() {
+		return items, decimal.Zero, "", nil
+	}
+	if base.Currency == "" || base.Recurring != nil || base.TransformQuantity != nil || base.BillingScheme == stripe.PriceBillingSchemeTiered {
+		return nil, decimal.Zero, "", errors.New("Stripe top-up service fee requires a fixed one-time price")
+	}
+	currency := string(base.Currency)
+	scale := stripeChargeScale(currency)
+	feeMinor := fee.Shift(scale)
+	if !feeMinor.IsInteger() || (currency == "isk" || currency == "ugx") && !fee.IsInteger() {
+		return nil, decimal.Zero, "", errors.New("invalid Stripe top-up service fee precision for " + currency)
+	}
+	items = append(items, &stripe.CheckoutSessionLineItemParams{
+		Quantity: stripe.Int64(1),
+		PriceData: &stripe.CheckoutSessionLineItemPriceDataParams{
+			Currency:   stripe.String(currency),
+			UnitAmount: stripe.Int64(feeMinor.IntPart()),
+			ProductData: &stripe.CheckoutSessionLineItemPriceDataProductDataParams{
+				Name: stripe.String("Small top-up service fee"),
+			},
+		},
+	})
+	subtotal := stripePriceUnitAmount(base).Mul(decimal.NewFromInt(quantity)).Round(0)
+	if items[0].PriceData != nil {
+		subtotal = decimal.NewFromInt(*items[0].PriceData.UnitAmount)
+	}
+	return items, subtotal.Add(feeMinor).Shift(-scale), currency, nil
+}
+
+func stripePriceUnitAmount(base *stripe.Price) decimal.Decimal {
+	if base.UnitAmountDecimal > 0 {
+		return decimal.NewFromFloat(base.UnitAmountDecimal)
+	}
+	return decimal.NewFromInt(base.UnitAmount)
 }
 
 // Use the configured Stripe price's currency, product and tax behavior.
@@ -448,11 +539,7 @@ func stripeMembershipLineItem(base *stripe.Price, quantity int64, ratio float64)
 	if base.Product == nil || base.Currency == "" || base.Recurring != nil || base.TransformQuantity != nil {
 		return nil, errors.New("Stripe VIP pricing requires a fixed one-time price")
 	}
-	unit := decimal.NewFromInt(base.UnitAmount)
-	if base.UnitAmountDecimal > 0 {
-		unit = decimal.NewFromFloat(base.UnitAmountDecimal)
-	}
-	total := unit.Mul(decimal.NewFromInt(quantity)).Mul(decimal.NewFromFloat(ratio)).Round(0)
+	total := stripePriceUnitAmount(base).Mul(decimal.NewFromInt(quantity)).Mul(decimal.NewFromFloat(ratio)).Round(0)
 	if !total.IsPositive() || total.GreaterThan(decimal.NewFromInt(math.MaxInt64)) {
 		return nil, errors.New("invalid Stripe VIP checkout amount")
 	}

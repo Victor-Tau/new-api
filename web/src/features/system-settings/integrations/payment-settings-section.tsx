@@ -160,6 +160,12 @@ const paymentSchema = z.object({
   StripePriceId: z.string(),
   StripeUnitPrice: z.coerce.number().min(0),
   StripeMinTopUp: z.coerce.number().min(0),
+  StripeSmallTopUpFee: z.number().min(0).max(9999999999.99).multipleOf(0.01),
+  StripeSmallTopUpFeeWaiverCNY: z
+    .number()
+    .min(0)
+    .max(9999999999.99)
+    .multipleOf(0.01),
   StripePromotionCodesEnabled: z.boolean(),
   CreemApiKey: z.string(),
   CreemWebhookSecret: z.string(),
@@ -634,6 +640,20 @@ export function PaymentSettingsSection({
 
     if (sanitized.StripeMinTopUp !== initial.StripeMinTopUp) {
       updates.push({ key: 'StripeMinTopUp', value: sanitized.StripeMinTopUp })
+    }
+
+    if (
+      values.StripeSmallTopUpFee !== initialRef.current.StripeSmallTopUpFee ||
+      values.StripeSmallTopUpFeeWaiverCNY !==
+        initialRef.current.StripeSmallTopUpFeeWaiverCNY
+    ) {
+      updates.push({
+        key: 'StripeSmallTopUpFeeSettings',
+        value: JSON.stringify({
+          amount: values.StripeSmallTopUpFee,
+          waiver_cny: values.StripeSmallTopUpFeeWaiverCNY,
+        }),
+      })
     }
 
     if (
@@ -1574,6 +1594,56 @@ export function PaymentSettingsSection({
                           />
                         </FormControl>
                       </SettingsSwitchItem>
+                    )}
+                  />
+                </div>
+                <div className='grid gap-6 md:grid-cols-2'>
+                  <FormField
+                    control={form.control}
+                    name='StripeSmallTopUpFee'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Small top-up service fee')}</FormLabel>
+                        <FormControl>
+                          <Input
+                            type='number'
+                            step='0.01'
+                            min={0}
+                            {...safeNumberFieldProps(field)}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Enter the fee in the Stripe Price currency. Set it to 0 to disable it.'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                  <FormField
+                    control={form.control}
+                    name='StripeSmallTopUpFeeWaiverCNY'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>
+                          {t('Service fee waiver threshold (CNY)')}
+                        </FormLabel>
+                        <FormControl>
+                          <Input
+                            type='number'
+                            step='0.01'
+                            min={0}
+                            {...safeNumberFieldProps(field)}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'The fee is waived when the top-up principal, converted to CNY at the site exchange rate, exceeds this amount.'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
                     )}
                   />
                 </div>

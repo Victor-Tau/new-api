@@ -43,7 +43,7 @@ describe('payment amount routing', () => {
       },
     })
 
-    expect(amount).toBe(18.75)
+    expect(amount).toEqual({ total: 18.75 })
     expect(calls).toEqual(['waffo:120'])
   })
 })

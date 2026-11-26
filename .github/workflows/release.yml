@@ -31,28 +31,13 @@ jobs:
       - name: Build Frontend
         env:
           CI: ""
-        run: |
-          cd web
-          bun install --frozen-lockfile
-          DISABLE_ESLINT_PLUGIN='true' VITE_REACT_APP_VERSION="$RELEASE_VERSION" bun run build
-          cd ..
+        run: make build-web RELEASE_VERSION="$RELEASE_VERSION"
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
       - name: Build Linux amd64 binary
-        env:
-          GOOS: linux
-          GOARCH: amd64
-          CGO_ENABLED: '0'
-          GOWORK: 'off'
-        run: |
-          mkdir -p build
-          go mod download github.com/MoeForge/moejs
-          profile="$(go list -m -f '{{.Dir}}' github.com/MoeForge/moejs)/default.pgo"
-          go build -trimpath -pgo="$profile" -ldflags "-s -w -X github.com/QuantumNous/new-api/common.Version=$RELEASE_VERSION" -o "build/new-api-$RELEASE_VERSION" .
-          cd build
-          sha256sum "new-api-$RELEASE_VERSION" > checksums-linux.txt
+        run: make build-linux-amd64 RELEASE_VERSION="$RELEASE_VERSION"
 
       - name: Release
         uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
