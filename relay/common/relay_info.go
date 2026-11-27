@@ -101,8 +101,10 @@ type RelayInfo struct {
 	UsePrice               bool
 	RelayMode              int
 	Compact                bool
+	SubagentKind           string
 	OriginModelName        string
 	ResponseModel          *ResponseModel
+	UpstreamServiceTier    string
 
 	// BillingModelName is the pricing identity for this request. It is kept
 	// separate from OriginModelName and UpstreamModelName so virtual pricing
@@ -365,6 +367,7 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	info.requestInferredToolKey = ""
 	// Logs use the client's effort even when the request body passes through unchanged.
 	info.ReasoningEffort = reasoningEffortFromRequest(info.Request)
+	info.UpstreamServiceTier = ""
 	info.ReasoningConversion = nil
 
 	// reset some fields based on channel meta
@@ -535,10 +538,19 @@ func GenRelayInfoEmbedding(c *gin.Context, request dto.Request) *RelayInfo {
 const codexTurnMetadataHeader = "x-codex-turn-metadata"
 
 func GenRelayInfoResponses(c *gin.Context, request *dto.OpenAIResponsesRequest) *RelayInfo {
+	return genRelayInfoResponses(c, request, nil)
+}
+
+func GenRelayInfoResponsesWebSocket(c *gin.Context, request *dto.OpenAIResponsesRequest, frameBody []byte) *RelayInfo {
+	return genRelayInfoResponses(c, request, frameBody)
+}
+
+func genRelayInfoResponses(c *gin.Context, request *dto.OpenAIResponsesRequest, frameBody []byte) *RelayInfo {
 	info := genBaseRelayInfo(c, request)
 	info.RelayMode = relayconstant.RelayModeResponses
 	info.RelayFormat = types.RelayFormatOpenAIResponses
 	info.Compact = isResponsesCompaction(request, c.GetHeader(codexTurnMetadataHeader))
+	info.SubagentKind = responsesSubagentKind(c, request.ClientMetadata, frameBody)
 
 	info.ResponsesUsageInfo = &ResponsesUsageInfo{
 		BuiltInTools: make(map[string]*BuildInToolInfo),
@@ -559,12 +571,7 @@ func isResponsesCompaction(request *dto.OpenAIResponsesRequest, headerMetadata s
 	// Prefer per-request metadata because the WebSocket handshake header may
 	// describe an earlier turn on a reused connection.
 	clientMetadata := ojson.GetBytesNoCopy(request.ClientMetadata, "@this")
-	turnMetadata := clientMetadata.Get(codexTurnMetadataHeader)
-	if turnMetadata.Type == ojson.String {
-		if raw := turnMetadata.String(); ojson.Valid(raw) {
-			turnMetadata = ojson.Parse(raw)
-		}
-	}
+	turnMetadata := decodeCodexTurnMetadata(clientMetadata.Get(codexTurnMetadataHeader))
 	kind := turnMetadata.Get("request_kind")
 	if kind.Type != ojson.String {
 		kind = clientMetadata.Get("request_kind")
@@ -876,6 +883,7 @@ func GenRelayInfoResponsesCompaction(c *gin.Context, request *dto.OpenAIResponse
 	}
 	info.RelayFormat = types.RelayFormatOpenAIResponsesCompaction
 	info.Compact = true
+	info.SubagentKind = responsesSubagentKind(c, nil, nil)
 	return info
 }
 

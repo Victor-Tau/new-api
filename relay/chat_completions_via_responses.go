@@ -159,6 +159,7 @@ func relayResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, adaptor 
 	if apiErr := requestplugin.Egress(c, info, jsonData); apiErr != nil {
 		return nil, apiErr
 	}
+	observeUpstreamServiceTier(info, jsonData, nil)
 
 	body, closer, err := relaycommon.NewOutboundJSONBody(jsonData)
 	if err != nil {

@@ -314,6 +314,8 @@ export interface LogOtherData {
   request_rules?: RequestRuleTrace[]
   usage_facts?: Record<string, string | number>
   reasoning_effort?: string
+  service_tier?: string
+  subagent_kind?: string
   image?: boolean
   image_ratio?: number
   image_output?: number

@@ -99,6 +99,7 @@ import {
 import { USAGE_BILLING_PATH, type LogOtherData } from '../../types'
 import { ResponseModelDetails } from '../model-badge'
 import { PluginAuthorLink } from '../plugin-author-link'
+import { ServiceTierBadge } from '../request-metadata'
 import {
   RequestPluginAdminSteps,
   RequestPluginRecord,
@@ -1172,6 +1173,16 @@ export function DetailsDialog(props: DetailsDialogProps) {
               />
             )}
           </DetailSection>
+        )}
+
+        {other?.service_tier && (
+          <DetailRow
+            label={t('Service Tier')}
+            value={<ServiceTierBadge tier={other.service_tier} />}
+          />
+        )}
+        {other?.subagent_kind && (
+          <DetailRow label={t('Subagent')} value={other.subagent_kind} mono />
         )}
 
         {/* Reasoning effort */}

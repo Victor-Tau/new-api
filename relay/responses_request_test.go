@@ -105,6 +105,105 @@ func TestResponsesCompactionLog(t *testing.T) {
 	}
 }
 
+func TestResponsesSubagentLog(t *testing.T) {
+	for _, tc := range []struct {
+		name, turnHeader, subagentHeader, fields, kind string
+		websocket, compact                             bool
+	}{
+		{name: "HTTP uses header metadata", turnHeader: `{"subagent_kind":" thread_spawn "}`, subagentHeader: "collab_spawn", fields: `,"client_metadata":{"x-codex-turn-metadata":"{\"subagent_kind\":\"review\"}"}`, kind: "thread_spawn"},
+		{name: "standalone subagent header", subagentHeader: " collab_spawn ", kind: "collab_spawn"},
+		{name: "standalone client marker", fields: `,"client_metadata":{"x-openai-subagent":"guardian"}`, kind: "guardian"},
+		{name: "HTTP body alias", fields: `,"turnMetadata":"{\"subagent_kind\":\"review\"}"`, kind: "review"},
+		{name: "compact endpoint", compact: true, subagentHeader: "compact", kind: "compact"},
+		{name: "malformed authoritative metadata", turnHeader: `{"subagent_kind":`, fields: `,"turn_metadata":"{\"subagent_kind\":\"review\"}"`},
+		{name: "parent thread alone", turnHeader: `{"parent_thread_id":"parent"}`, fields: `,"client_metadata":{"x-codex-parent-thread-id":"parent"}`},
+		{name: "frame overrides handshake", websocket: true, turnHeader: `{"subagent_kind":"thread_spawn"}`, subagentHeader: "collab_spawn", fields: `,"client_metadata":{"x-codex-turn-metadata":"{\"subagent_kind\":\"review\"}"}`, kind: "review"},
+		{name: "frame alias overrides handshake", websocket: true, subagentHeader: "collab_spawn", fields: `,"turn_metadata":"{\"subagent_kind\":\"review\"}"`, kind: "review"},
+		{name: "ordinary frame clears handshake marker", websocket: true, subagentHeader: "collab_spawn", fields: `,"client_metadata":{"x-codex-turn-metadata":"{\"request_kind\":\"turn\"}"}`},
+		{name: "frame marker without turn metadata", websocket: true, turnHeader: `{"subagent_kind":"thread_spawn"}`, fields: `,"client_metadata":{"x-openai-subagent":"review"}`, kind: "review"},
+		{name: "frame falls back to handshake", websocket: true, subagentHeader: "collab_spawn", kind: "collab_spawn"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := `{"model":"gpt-5.1-codex","input":"hello"` + tc.fields + `}`
+			path := "/v1/responses"
+			format := types.RelayFormat(types.RelayFormatOpenAIResponses)
+			if tc.compact {
+				path += "/compact"
+				format = types.RelayFormatOpenAIResponsesCompaction
+			}
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, path, strings.NewReader(raw))
+			c.Request.Header.Set("Content-Type", "application/json")
+			c.Request.Header.Set("X-Codex-Turn-Metadata", tc.turnHeader)
+			c.Request.Header.Set("X-OpenAI-Subagent", tc.subagentHeader)
+			t.Cleanup(func() { common.CleanupBodyStorage(c) })
+			var info *relaycommon.RelayInfo
+			if tc.websocket {
+				create, _, err := normalizeResponsesWSTestMessage([]byte(`{"type":"response.create","response":` + raw + `}`))
+				require.NoError(t, err)
+				info = relaycommon.GenRelayInfoResponsesWebSocket(c, &create.Request, create.Body)
+			} else {
+				request, err := helper.GetAndValidateRequest(c, format)
+				require.NoError(t, err)
+				info, err = relaycommon.GenRelayInfo(c, format, request, nil)
+				require.NoError(t, err)
+			}
+			info.InitChannelMeta(c)
+			other := service.GenerateTextOtherInfo(c, info, 0, 0, 0, 0, 0, 0, 0).Snapshot()
+			if tc.kind == "" {
+				assert.NotContains(t, other, "subagent_kind")
+			} else {
+				assert.Equal(t, tc.kind, other["subagent_kind"])
+			}
+			assert.NotContains(t, other, "parent_thread_id")
+		})
+	}
+}
+
+func TestResponsesLogsPreparedServiceTier(t *testing.T) {
+	for _, tc := range []struct {
+		name, want, override string
+		allow, passthrough   bool
+	}{
+		{name: "disabled by channel"},
+		{name: "allowed by channel", allow: true, want: "flex"},
+		{name: "channel override wins", allow: true, override: "priority", want: "priority"},
+		{name: "body passthrough", passthrough: true, want: "flex"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const raw = `{"model":"gpt-5.1-codex","input":"hello","service_tier":"flex"}`
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(raw))
+			c.Request.Header.Set("Content-Type", "application/json")
+			t.Cleanup(func() { common.CleanupBodyStorage(c) })
+			common.SetContextKey(c, constant.ContextKeyOriginalModel, "gpt-5.1-codex")
+			common.SetContextKey(c, constant.ContextKeyChannelType, constant.ChannelTypeOpenAI)
+			common.SetContextKey(c, constant.ContextKeyChannelBaseUrl, "https://api.openai.com")
+			common.SetContextKey(c, constant.ContextKeyChannelSetting, dto.ChannelSettings{PassThroughBodyEnabled: tc.passthrough})
+			common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, dto.ChannelOtherSettings{AllowServiceTier: tc.allow})
+			if tc.override != "" {
+				common.SetContextKey(c, constant.ContextKeyChannelParamOverride, map[string]any{"service_tier": tc.override})
+			}
+			request, err := helper.GetAndValidateRequest(c, types.RelayFormatOpenAIResponses)
+			require.NoError(t, err)
+			responses := request.(*dto.OpenAIResponsesRequest)
+			info := relaycommon.GenRelayInfoResponses(c, responses)
+			_, body, closer, apiErr := PrepareResponsesRequest(c, info, responses)
+			require.Nil(t, apiErr)
+			t.Cleanup(func() { require.NoError(t, closer.Close()) })
+			wire, err := io.ReadAll(body)
+			require.NoError(t, err)
+			other := service.GenerateTextOtherInfo(c, info, 0, 0, 0, 0, 0, 0, 0).Snapshot()
+			assert.Equal(t, tc.want, gjson.GetBytes(wire, "service_tier").String())
+			if tc.want == "" {
+				assert.NotContains(t, other, "service_tier")
+			} else {
+				assert.Equal(t, tc.want, other["service_tier"])
+			}
+		})
+	}
+}
+
 func TestPrepareResponsesRequestDeepSeekEffectiveReasoning(t *testing.T) {
 	settings := model_setting.GetGlobalSettings()
 	previous := settings.PassThroughRequestEnabled

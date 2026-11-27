@@ -58,6 +58,7 @@ func PrepareResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, req *d
 		if apiErr := requestplugin.PassThrough(c, info, storage); apiErr != nil {
 			return nil, nil, nil, apiErr
 		}
+		observeUpstreamServiceTier(info, nil, storage)
 		body := common.NewReplayableBodyReader(storage)
 		return adaptor, body, io.NopCloser(body), nil
 	}
@@ -95,6 +96,7 @@ func PrepareResponsesRequest(c *gin.Context, info *relaycommon.RelayInfo, req *d
 	if apiErr = requestplugin.Egress(c, info, jsonData); apiErr != nil {
 		return nil, nil, nil, apiErr
 	}
+	observeUpstreamServiceTier(info, jsonData, nil)
 
 	logger.LogDebug(c, "requestBody: %s", jsonData)
 	body, closer, err := relaycommon.NewOutboundJSONBody(jsonData)

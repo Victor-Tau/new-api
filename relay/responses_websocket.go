@@ -338,7 +338,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 		if apiErr = s.restoreConnectionContext(c, modelName); apiErr != nil {
 			return apiErr
 		}
-		info = relaycommon.GenRelayInfoResponses(c, &create.Request)
+		info = relaycommon.GenRelayInfoResponsesWebSocket(c, &create.Request, create.Body)
 		info.IsStream = true
 		info.SetRequestPluginIngress(ingressSteps, ingressRecord)
 		common.SetContextKey(c, appconstant.ContextKeyIsStream, true)
@@ -374,7 +374,7 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 			}
 			service.AppendUsedChannel(c, channel.Id)
 			if info == nil {
-				info = relaycommon.GenRelayInfoResponses(c, &create.Request)
+				info = relaycommon.GenRelayInfoResponsesWebSocket(c, &create.Request, create.Body)
 				info.IsStream = true
 				info.SetRequestPluginIngress(ingressSteps, ingressRecord)
 				common.SetContextKey(c, appconstant.ContextKeyIsStream, true)

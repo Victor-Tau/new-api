@@ -126,6 +126,35 @@ it('shows model mismatch evidence when tapping the mobile model badge', async ()
   expect(within(dialog).getByText('unexpected-model')).toBeVisible()
 })
 
+it('shows service tiers and subagent markers on mobile usage logs', () => {
+  renderLogs({
+    logs: [
+      log,
+      {
+        ...log,
+        id: 2,
+        other: JSON.stringify({
+          service_tier: 'priority',
+          subagent_kind: 'thread_spawn',
+        }),
+      },
+      {
+        ...log,
+        id: 3,
+        other: JSON.stringify({
+          service_tier: 'flex',
+          subagent_kind: 'review',
+        }),
+      },
+    ],
+  })
+
+  expect(screen.getByTitle('Service Tier: Priority')).toBeVisible()
+  expect(screen.getByTitle('Service Tier: Flex')).toBeVisible()
+  expect(screen.getByRole('img', { name: 'Subagent' })).toBeVisible()
+  expect(screen.getByRole('img', { name: 'Review subagent' })).toBeVisible()
+})
+
 it('opens long channel text on tap and copies the complete value', async () => {
   const user = userEvent.setup()
   const copy = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue()

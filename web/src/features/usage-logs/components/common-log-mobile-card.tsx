@@ -39,6 +39,7 @@ import {
   isTimingLogType,
 } from '../lib/utils'
 import { ModelBadge, ResponseModelDetails } from './model-badge'
+import { LogRequestMetadata } from './request-metadata'
 import { StreamTpsCell, TimingMetricsCell } from './timing-metrics-cell'
 import { useUsageLogsContext } from './usage-logs-provider'
 
@@ -153,6 +154,7 @@ export function CommonLogMobileCard<TData>(props: {
               wrapText
               onInspect={() => setSelectedField('model')}
             />
+            <LogRequestMetadata other={other} />
           </div>
         )}
         {fields.cost.visible && costCell && (

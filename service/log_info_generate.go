@@ -115,9 +115,7 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	if relayInfo.ReasoningEffort != "" {
 		other.SetPublic("reasoning_effort", relayInfo.ReasoningEffort)
 	}
-	if relayInfo.Compact {
-		other.SetPublic("compact", true)
-	}
+	appendRequestMetadataLogInfo(relayInfo, other)
 	if relayInfo.IsModelMapped {
 		other.SetPublic("is_model_mapped", true)
 		other.SetPublic("upstream_model_name", relayInfo.UpstreamModelName)
@@ -138,6 +136,21 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	appendRequestPluginRecord(relayInfo, other)
 	appendStreamStatus(relayInfo, other)
 	return other
+}
+
+func appendRequestMetadataLogInfo(relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
+	if relayInfo == nil {
+		return
+	}
+	if relayInfo.Compact {
+		other.SetPublic("compact", true)
+	}
+	if relayInfo.SubagentKind != "" {
+		other.SetPublic("subagent_kind", relayInfo.SubagentKind)
+	}
+	if relayInfo.UpstreamServiceTier != "" {
+		other.SetPublic("service_tier", relayInfo.UpstreamServiceTier)
+	}
 }
 
 func AppendResponseModelLogInfo(relayInfo *relaycommon.RelayInfo, other *model.LogOther) {
