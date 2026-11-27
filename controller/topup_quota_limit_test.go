@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -18,6 +19,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stripe/stripe-go/v81"
+	"github.com/stripe/stripe-go/v81/webhook"
 	"gorm.io/gorm"
 )
 
@@ -307,6 +309,103 @@ func TestStripeSmallTopUpFeePreviewAndCheckout(t *testing.T) {
 			require.NoError(t, db.Last(&stored).Error)
 			assert.Equal(t, float64(tc.quantity), stored.Money)
 			assert.Equal(t, common.TopUpStatusPending, stored.Status)
+		})
+	}
+}
+
+func TestStripeWebhookCheckoutEvents(t *testing.T) {
+	confirmPaymentComplianceForTest(t)
+	db := setupManageUserTestDB(t)
+	require.NoError(t, db.AutoMigrate(&model.TopUp{}, &model.SubscriptionOrder{}, &model.GrowthEvent{}, &model.UserGrowth{}))
+	previousKey, previousSecret, previousPrice := setting.StripeApiSecret, setting.StripeWebhookSecret, setting.StripePriceId
+	previousBackend := stripe.GetBackend(stripe.APIBackend)
+	previousQuotaPerUnit := common.QuotaPerUnit
+	t.Cleanup(func() {
+		setting.StripeApiSecret, setting.StripeWebhookSecret, setting.StripePriceId = previousKey, previousSecret, previousPrice
+		stripe.SetBackend(stripe.APIBackend, previousBackend)
+		common.QuotaPerUnit = previousQuotaPerUnit
+	})
+	setting.StripeApiSecret, setting.StripeWebhookSecret, setting.StripePriceId = "sk_test_fixture", "whsec_fixture", "price_fixture"
+	common.QuotaPerUnit = 500000
+
+	for i, tc := range []struct {
+		name, eventType, sessionStatus, paymentStatus string
+		stripeError, snapshot, wrongSecret, stale     bool
+		deliveries, wantLookups, wantHTTP             int
+		wantOrderStatus                               string
+	}{
+		{name: "paid thin event and duplicate", eventType: "checkout.session.completed", sessionStatus: "complete", paymentStatus: "paid", deliveries: 2, wantLookups: 2, wantHTTP: 200, wantOrderStatus: common.TopUpStatusSuccess},
+		{name: "paid snapshot event", eventType: "checkout.session.completed", sessionStatus: "complete", paymentStatus: "paid", snapshot: true, deliveries: 1, wantHTTP: 200, wantOrderStatus: common.TopUpStatusSuccess},
+		{name: "unpaid checkout waits for async payment", eventType: "checkout.session.completed", sessionStatus: "complete", paymentStatus: "unpaid", deliveries: 1, wantLookups: 1, wantHTTP: 200, wantOrderStatus: common.TopUpStatusPending},
+		{name: "async payment succeeds", eventType: "checkout.session.async_payment_succeeded", sessionStatus: "complete", paymentStatus: "paid", deliveries: 1, wantLookups: 1, wantHTTP: 200, wantOrderStatus: common.TopUpStatusSuccess},
+		{name: "async payment fails", eventType: "checkout.session.async_payment_failed", sessionStatus: "complete", paymentStatus: "unpaid", deliveries: 1, wantLookups: 1, wantHTTP: 200, wantOrderStatus: common.TopUpStatusFailed},
+		{name: "async failure arrives after payment", eventType: "checkout.session.async_payment_failed", sessionStatus: "complete", paymentStatus: "paid", deliveries: 1, wantLookups: 1, wantHTTP: 200, wantOrderStatus: common.TopUpStatusPending},
+		{name: "checkout expires", eventType: "checkout.session.expired", sessionStatus: "expired", paymentStatus: "unpaid", deliveries: 1, wantLookups: 1, wantHTTP: 200, wantOrderStatus: common.TopUpStatusExpired},
+		{name: "invalid signature", eventType: "checkout.session.completed", wrongSecret: true, deliveries: 1, wantHTTP: 400, wantOrderStatus: common.TopUpStatusPending},
+		{name: "stale signature", eventType: "checkout.session.completed", stale: true, deliveries: 1, wantHTTP: 400, wantOrderStatus: common.TopUpStatusPending},
+		{name: "Stripe lookup fails", eventType: "checkout.session.completed", stripeError: true, deliveries: 1, wantLookups: 1, wantHTTP: 503, wantOrderStatus: common.TopUpStatusPending},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const initialQuota = 42
+			user := model.User{Username: fmt.Sprintf("stripe-webhook-%d", i), AffCode: fmt.Sprintf("wh%04d", i), Quota: initialQuota}
+			require.NoError(t, db.Create(&user).Error)
+			order := model.TopUp{
+				UserId: user.Id, TradeNo: fmt.Sprintf("ref_stripe_checkout_%d", i), Amount: 10, Money: 10,
+				PaymentMethod: model.PaymentMethodStripe, PaymentProvider: model.PaymentProviderStripe, Status: common.TopUpStatusPending,
+			}
+			require.NoError(t, order.Insert())
+
+			const sessionID = "cs_test_fixture"
+			checkout := fmt.Sprintf(`{"id":%q,"object":"checkout.session","client_reference_id":%q,"customer":"cus_fixture","status":%q,"payment_status":%q,"amount_total":1345,"currency":"hkd"}`,
+				sessionID, order.TradeNo, tc.sessionStatus, tc.paymentStatus)
+			payload := fmt.Sprintf(`{"id":"evt_fixture","object":"v2.core.event","type":"v1.%s","created":"2026-11-27T02:12:49.662Z","livemode":false,"related_object":{"id":%q,"type":"checkout.session","url":"/v1/checkout/sessions/%s"}}`,
+				tc.eventType, sessionID, sessionID)
+			if tc.snapshot {
+				payload = fmt.Sprintf(`{"id":"evt_fixture","object":"event","type":%q,"created":1795745569,"livemode":false,"data":{"object":%s}}`, tc.eventType, checkout)
+			}
+
+			lookups := 0
+			transport := stripeTopUpTestTransport(func(req *http.Request) (*http.Response, error) {
+				lookups++
+				assert.Equal(t, http.MethodGet, req.Method)
+				assert.Equal(t, "/v1/checkout/sessions/"+sessionID, req.URL.Path)
+				if tc.stripeError {
+					return nil, fmt.Errorf("Stripe is temporarily unavailable")
+				}
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(checkout)), Header: http.Header{}}, nil
+			})
+			stripe.SetBackend(stripe.APIBackend, stripe.GetBackendWithConfig(stripe.APIBackend, &stripe.BackendConfig{
+				HTTPClient: &http.Client{Transport: transport}, MaxNetworkRetries: stripe.Int64(0),
+			}))
+			secret, timestamp := setting.StripeWebhookSecret, time.Now()
+			if tc.wrongSecret {
+				secret = "whsec_other"
+			}
+			if tc.stale {
+				timestamp = timestamp.Add(-2 * webhook.DefaultTolerance)
+			}
+			signed := webhook.GenerateTestSignedPayload(&webhook.UnsignedPayload{Payload: []byte(payload), Secret: secret, Timestamp: timestamp})
+			for range tc.deliveries {
+				recorder := httptest.NewRecorder()
+				ctx, _ := gin.CreateTestContext(recorder)
+				ctx.Request = httptest.NewRequest(http.MethodPost, "/api/stripe/webhook", strings.NewReader(payload))
+				ctx.Request.Header.Set("Stripe-Signature", signed.Header)
+				StripeWebhook(ctx)
+				require.Equal(t, tc.wantHTTP, recorder.Code)
+			}
+			assert.Equal(t, tc.wantLookups, lookups)
+
+			storedOrder := model.GetTopUpByTradeNo(order.TradeNo)
+			require.NotNil(t, storedOrder)
+			assert.Equal(t, tc.wantOrderStatus, storedOrder.Status)
+			storedUser, err := model.GetUserById(user.Id, false)
+			require.NoError(t, err)
+			wantQuota := initialQuota
+			if tc.wantOrderStatus == common.TopUpStatusSuccess {
+				wantQuota += 5_000_000
+				assert.Equal(t, "cus_fixture", storedUser.StripeCustomer)
+			}
+			assert.Equal(t, wantQuota, storedUser.Quota)
 		})
 	}
 }

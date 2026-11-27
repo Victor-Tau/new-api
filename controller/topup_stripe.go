@@ -211,34 +211,105 @@ func StripeWebhook(c *gin.Context) {
 		return
 	}
 
-	signature := c.GetHeader("Stripe-Signature")
-	logger.LogInfo(ctx, common.LogText("Stripe webhook received request path=%q client_ip=%s signature=%q body=%q", c.Request.RequestURI, c.ClientIP(), signature, string(payload)))
-	event, err := webhook.ConstructEventWithOptions(payload, signature, setting.StripeWebhookSecret, webhook.ConstructEventOptions{
-		IgnoreAPIVersionMismatch: true,
-	})
-
-	if err != nil {
-		logger.LogWarn(ctx, common.LogText("Stripe webhook signature verification failed path=%q client_ip=%s error=%q", c.Request.RequestURI, c.ClientIP(), err.Error()))
+	callerIp := c.ClientIP()
+	if err := webhook.ValidatePayload(payload, c.GetHeader("Stripe-Signature"), setting.StripeWebhookSecret); err != nil {
+		logger.LogWarn(ctx, common.LogText("Stripe webhook signature verification failed path=%q client_ip=%s error=%q", c.Request.RequestURI, callerIp, err.Error()))
 		c.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
 
-	callerIp := c.ClientIP()
-	logger.LogInfo(ctx, common.LogText("Stripe webhook signature verified event_type=%s client_ip=%s path=%q", string(event.Type), callerIp, c.Request.RequestURI))
-	switch event.Type {
-	case stripe.EventTypeCheckoutSessionCompleted:
-		sessionCompleted(ctx, event, callerIp)
-	case stripe.EventTypeCheckoutSessionExpired:
-		sessionExpired(ctx, event)
-	case stripe.EventTypeCheckoutSessionAsyncPaymentSucceeded:
-		sessionAsyncPaymentSucceeded(ctx, event, callerIp)
-	case stripe.EventTypeCheckoutSessionAsyncPaymentFailed:
-		sessionAsyncPaymentFailed(ctx, event, callerIp)
-	default:
-		logger.LogInfo(ctx, common.LogText("Stripe webhook ignored event event_type=%s client_ip=%s", string(event.Type), callerIp))
+	// Snapshot and thin events use different types for created. The handler only needs the fields below.
+	var notification struct {
+		ID            string            `json:"id"`
+		Object        string            `json:"object"`
+		Type          stripe.EventType  `json:"type"`
+		Livemode      bool              `json:"livemode"`
+		Data          *stripe.EventData `json:"data"`
+		RelatedObject struct {
+			ID   string `json:"id"`
+			Type string `json:"type"`
+		} `json:"related_object"`
+	}
+	if err := common.Unmarshal(payload, &notification); err != nil {
+		logger.LogWarn(ctx, common.LogText("Stripe webhook failed to parse event path=%q client_ip=%s error=%q", c.Request.RequestURI, callerIp, err.Error()))
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
 	}
 
+	thin := notification.Object == "v2.core.event"
+	event := stripe.Event{ID: notification.ID, Type: notification.Type, Data: notification.Data}
+	if thin {
+		event.Type = stripe.EventType(strings.TrimPrefix(string(event.Type), "v1."))
+	}
+	var handle func(context.Context, stripe.Event, string)
+	switch event.Type {
+	case stripe.EventTypeCheckoutSessionCompleted:
+		handle = sessionCompleted
+	case stripe.EventTypeCheckoutSessionExpired:
+		handle = sessionExpired
+	case stripe.EventTypeCheckoutSessionAsyncPaymentSucceeded:
+		handle = sessionAsyncPaymentSucceeded
+	case stripe.EventTypeCheckoutSessionAsyncPaymentFailed:
+		handle = sessionAsyncPaymentFailed
+	default:
+		logger.LogInfo(ctx, common.LogText("Stripe webhook ignored event event_type=%s client_ip=%s", string(notification.Type), callerIp))
+		c.Status(http.StatusOK)
+		return
+	}
+
+	if thin {
+		sessionID := notification.RelatedObject.ID
+		if notification.RelatedObject.Type != "checkout.session" || !strings.HasPrefix(sessionID, "cs_") {
+			logger.LogWarn(ctx, common.LogText("Stripe thin webhook missing related Checkout Session event_id=%s event_type=%s", event.ID, string(notification.Type)))
+			c.AbortWithStatus(http.StatusBadRequest)
+			return
+		}
+		event.Data, err = fetchStripeCheckoutSessionData(ctx, sessionID, notification.Livemode)
+		if err != nil {
+			logger.LogError(ctx, common.LogText("Stripe webhook failed to retrieve Checkout Session event_id=%s session_id=%s error=%q", event.ID, sessionID, err.Error()))
+			c.AbortWithStatus(http.StatusServiceUnavailable)
+			return
+		}
+		paid := event.GetObjectValue("payment_status") == string(stripe.CheckoutSessionPaymentStatusPaid)
+		if event.Type == stripe.EventTypeCheckoutSessionAsyncPaymentSucceeded && !paid {
+			logger.LogWarn(ctx, common.LogText("Stripe Checkout Session is not yet paid event_id=%s session_id=%s", event.ID, sessionID))
+			c.AbortWithStatus(http.StatusServiceUnavailable)
+			return
+		}
+		if event.Type == stripe.EventTypeCheckoutSessionAsyncPaymentFailed && paid {
+			logger.LogInfo(ctx, common.LogText("Stripe webhook ignored event event_type=%s client_ip=%s", string(notification.Type), callerIp))
+			c.Status(http.StatusOK)
+			return
+		}
+	} else if event.Data == nil || event.Data.Object == nil {
+		logger.LogWarn(ctx, common.LogText("Stripe snapshot webhook missing Checkout Session event_id=%s event_type=%s", event.ID, string(event.Type)))
+		c.AbortWithStatus(http.StatusBadRequest)
+		return
+	}
+
+	logger.LogInfo(ctx, common.LogText("Stripe webhook processing event event_id=%s event_type=%s client_ip=%s", event.ID, string(notification.Type), callerIp))
+	handle(ctx, event, callerIp)
 	c.Status(http.StatusOK)
+}
+
+func fetchStripeCheckoutSessionData(ctx context.Context, sessionID string, liveMode bool) (*stripe.EventData, error) {
+	client := session.Client{B: stripe.GetBackend(stripe.APIBackend), Key: setting.StripeApiSecret}
+	params := &stripe.CheckoutSessionParams{}
+	params.Context = ctx
+	checkout, err := client.Get(sessionID, params)
+	if err != nil {
+		return nil, err
+	}
+	if checkout.ID != sessionID || checkout.Object != "checkout.session" || checkout.Livemode != liveMode || checkout.LastResponse == nil {
+		return nil, errors.New("Stripe returned an unexpected Checkout Session")
+	}
+
+	// Keep the raw response so fulfillment can read fields such as presentment_details.
+	data := &stripe.EventData{Raw: checkout.LastResponse.RawJSON}
+	if err := common.Unmarshal(data.Raw, &data.Object); err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
 func sessionCompleted(ctx context.Context, event stripe.Event, callerIp string) {
@@ -369,7 +440,7 @@ func stripeChargeScale(currency string) int32 {
 	return 2
 }
 
-func sessionExpired(ctx context.Context, event stripe.Event) {
+func sessionExpired(ctx context.Context, event stripe.Event, _ string) {
 	referenceId := event.GetObjectValue("client_reference_id")
 	status := event.GetObjectValue("status")
 	if "expired" != status {
